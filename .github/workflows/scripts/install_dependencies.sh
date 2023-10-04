@@ -22,7 +22,8 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 #
-COMMON="git file tree make"
+COMMON="git file tree make clamav clamav-freshclam helm podman docker hostname systemd jq"
+COMMAND_CHECK="kubectl clamscan helm podman docker hostname loginctl jq"
 
 case "${DISTRO}" in
 debian:*|ubuntu:*)
@@ -32,7 +33,7 @@ debian:*|ubuntu:*)
     # We get some errors once in a while, so let's try a few times.
     for i in 1 2 3; do
         apt -y install ${COMMON} ${DEBIAN_UBUNTU} && break
-        sleep 1
+        sleep ${i}
     done
     ;;
 fedora:*|*centos:*)
@@ -47,3 +48,7 @@ echo "================= SYSTEM ================="
 cat /etc/os-release
 uname -a
 echo "=========================================="
+
+for command in ${COMMAND_CHECK}; do
+    command -v "${command}"
+done

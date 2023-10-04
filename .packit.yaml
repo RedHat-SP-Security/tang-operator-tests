@@ -1,0 +1,7 @@
+jobs:
+- job: tests
+  trigger: pull_request
+  metadata:
+    targets:
+    - fedora-latest
+    skip_build: true

@@ -14,23 +14,22 @@ on:
   workflow_dispatch:
 
 jobs:
-  deploy:
+  test-execution:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os:
+          - fedora:latest
+    container:
+      image: ${{matrix.os}}
+      env:
+        DISTRO: ${{matrix.os}}
+        run:
+          set -eu
+          echo "DISTRO:${DISTRO}"
     steps:
     - name: Checkout
-      uses: actions/checkout@vmaster
-
-    - name: Minikube Installation
-      id: minikube
-      uses: medyagh/setup-minikube@latest
-
-    - name: Status
-      run: minikube status
-
-    - name: Install operator-sdk
-      run: |
-        sh .github/workflows/scripts/retrieve_and_install_operator_sdk.sh \
-          "v1.31.0" "5m" "${GITHUB_HEAD_REF}"
+      uses: actions/checkout@master
 
     - name: Install dependencies (kubectl, helm, clamscan, make)
       run: |
@@ -38,7 +37,4 @@ jobs:
 
     - name: Run test
       run: |
-        tree; make
-        
-        
-        
+        pushd .github/workflows/scripts/; ./tang_operator_test.sh; popd
