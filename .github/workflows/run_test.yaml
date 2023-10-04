@@ -1,0 +1,44 @@
+---
+name: "Test Execution"
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - '.wordlist.txt'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - '.wordlist.txt'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@vmaster
+
+    - name: Minikube Installation
+      id: minikube
+      uses: medyagh/setup-minikube@latest
+
+    - name: Status
+      run: minikube status
+
+    - name: Install operator-sdk
+      run: |
+        sh .github/workflows/scripts/retrieve_and_install_operator_sdk.sh \
+          "v1.31.0" "5m" "${GITHUB_HEAD_REF}"
+
+    - name: Install dependencies (kubectl, helm, clamscan, make)
+      run: |
+        sh .github/workflows/scripts/install_dependencies.sh
+
+    - name: Run test
+      run: |
+        tree; make
+        
+        
+        
