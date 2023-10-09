@@ -1,0 +1,17 @@
+summary: Install and configure minikube and addons.
+description: |
+    Install minikube, libvirt, kubectl and require addons.
+contact: Patrik Koncity <pkoncity@redhat.com>
+component:
+  - tang
+test: ./runtest.sh
+framework: beakerlib
+tag:
+  - CI-Tier-1
+require:
+  - libvirt-daemon
+  - podman
+duration: 5m
+enabled: true
+
+

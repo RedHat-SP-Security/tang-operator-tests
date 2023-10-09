@@ -1,0 +1,22 @@
+summary: common test plan for CI
+
+
+prepare:
+  - how: shell
+    script:
+     - systemctl disable --now dnf-makecache.service || true
+     - systemctl disable --now dnf-makecache.timer || true
+     - dnf makecache
+
+environment:
+  TANG_IMAGE: "quay.io/sec-eng-special/fedora_tang_server"
+  CI: "true"
+
+discover:
+  how: fmf
+  test:
+   - /Setup/setup_local_cluster
+   - /Sanity
+
+execute:
+    how: tmt
