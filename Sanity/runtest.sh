@@ -66,7 +66,8 @@ TOP_SECRET_WORDS="top secret"
 DELETE_TMP_DIR="YES"
 
 test -z "${VERSION}" && VERSION="latest"
-test -z "${DISABLE_BUNDLE_INSTALL_TESTS}" && DISABLE_BUNDLE_INSTALL_TESTS=0
+test -z "${DISABLE_BUNDLE_INSTALL_TESTS}" && DISABLE_BUNDLE_INSTALL_TESTS="0"
+test -z "${DISABLE_BUNDLE_UNINSTALL_TESTS}" && DISABLE_BUNDLE_UNINSTALL_TESTS="0"
 test -z "${IMAGE_VERSION}" && IMAGE_VERSION="quay.io/sec-eng-special/tang-operator-bundle:${VERSION}"
 test -n "${DOWNSTREAM_IMAGE_VERSION}" && {
     test -z "${OPERATOR_NAMESPACE}" && OPERATOR_NAMESPACE="openshift-operators"
@@ -603,6 +604,7 @@ installDownstreamVersion() {
 bundleStart() {
     if [ "${DISABLE_BUNDLE_INSTALL_TESTS}" == "1" ];
     then
+      rlLog "User asked to not install/uninstall by using DISABLE_BUNDLE_INSTALL_TESTS=1"
       return 0
     fi
     if [ -n "${DOWNSTREAM_IMAGE_VERSION}" ];
@@ -612,16 +614,42 @@ bundleStart() {
     fi
     if [ "${V}" == "1" ] || [ "${VERBOSE}" == "1" ];
     then
-      operator-sdk run bundle --timeout ${TO_BUNDLE} ${IMAGE_VERSION} ${RUN_BUNDLE_PARAMS} --namespace ${OPERATOR_NAMESPACE}
+      operator-sdk --verbose run bundle --timeout ${TO_BUNDLE} ${IMAGE_VERSION} ${RUN_BUNDLE_PARAMS} --namespace ${OPERATOR_NAMESPACE}
     else
       operator-sdk run bundle --timeout ${TO_BUNDLE} ${IMAGE_VERSION} ${RUN_BUNDLE_PARAMS} --namespace ${OPERATOR_NAMESPACE} 2>/dev/null
     fi
     return $?
 }
 
+bundleInitialStop() {
+    if [ "${DISABLE_BUNDLE_INSTALL_TESTS}" == "1" ];
+    then
+      rlLog "User asked to not install/uninstall by using DISABLE_BUNDLE_INSTALL_TESTS=1"
+      return 0
+    fi
+    if [ "${V}" == "1" ] || [ "${VERBOSE}" == "1" ];
+    then
+        operator-sdk --verbose cleanup tang-operator --namespace ${OPERATOR_NAMESPACE}
+    else
+        operator-sdk cleanup tang-operator --namespace ${OPERATOR_NAMESPACE} 2>/dev/null
+    fi
+    if [ $? -eq 0 ];
+    then
+        checkPodAmount 0 ${TO_ALL_POD_CONTROLLER_TERMINATE} ${OPERATOR_NAMESPACE}
+    fi
+    return 0
+}
+
+
 bundleStop() {
     if [ "${DISABLE_BUNDLE_INSTALL_TESTS}" == "1" ];
     then
+      rlLog "User asked to not install/uninstall by using DISABLE_BUNDLE_INSTALL_TESTS=1"
+      return 0
+    fi
+    if [ "${DISABLE_BUNDLE_UNINSTALL_TESTS}" == "1" ];
+    then
+      rlLog "User asked to not uninstall by using DISABLE_BUNDLE_UNINSTALL_TESTS=1"
       return 0
     fi
     if [ "${V}" == "1" ] || [ "${VERBOSE}" == "1" ];
@@ -778,7 +806,7 @@ rlJournalStart
         rlRun "operator-sdk version > /dev/null" 0 "Checking operator-sdk installation"
         rlRun "checkClusterStatus" 0 "Checking cluster status"
         # In case previous execution was abruptelly stopped:
-        rlRun "bundleStop" 0 "Cleaning already installed tang-operator (if any)"
+        rlRun "bundleInitialStop" 0 "Cleaning already installed tang-operator (if any)"
         rlRun "bundleStart" 0 "Installing tang-operator-bundle version:${VERSION}"
         rlRun "${OC_CLIENT} apply -f ${TEST_NAMESPACE_FILE}" 0 "Creating test namespace:${TEST_NAMESPACE}"
         rlRun "${OC_CLIENT} get namespace ${TEST_NAMESPACE}" 0 "Checking test namespace:${TEST_NAMESPACE}"
@@ -1195,7 +1223,8 @@ rlJournalStart
             uninstallDownstreamVersion
         fi
         rlRun "bundleStop" 0 "Cleaning installed tang-operator"
-        if [ "${DISABLE_BUNDLE_INSTALL_TESTS}" != "1" ]; then
+        if [ "${DISABLE_BUNDLE_INSTALL_TESTS}" != "1" ] && [ "${DISABLE_BUNDLE_UNINSTALL_TESTS}" != "1" ];
+        then
           test -z "${controller_name}" ||
               rlRun "checkPodKilled ${controller_name} ${OPERATOR_NAMESPACE} ${TO_POD_CONTROLLER_TERMINATE}" 0 "Checking controller POD not available any more [Timeout=${TO_POD_CONTROLLER_TERMINATE} secs.]"
         fi
