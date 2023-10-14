@@ -1,12 +1,12 @@
+---
 apiVersion: daemons.redhat.com/v1alpha1
 kind: TangServer
 metadata:
   name: tangserver-multi1
   namespace: nbde
   finalizers:
-  - finalizer.daemons.tangserver.redhat.com
+    - finalizer.daemons.tangserver.redhat.com
 spec:
-  # Add fields here
   replicas: 2
   image: "registry.redhat.io/rhel9/tang"
   version: "latest"
@@ -19,9 +19,8 @@ metadata:
   name: tangserver-multi2
   namespace: nbde
   finalizers:
-  - finalizer.daemons.tangserver.redhat.com
+    - finalizer.daemons.tangserver.redhat.com
 spec:
-  # Add fields here
   replicas: 3
   image: "registry.redhat.io/rhel9/tang"
   version: "latest"
