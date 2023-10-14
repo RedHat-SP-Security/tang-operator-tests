@@ -1,4 +1,4 @@
-# tang-operator-tests
+# tang-operator test suite
 Upstream repository for tang-operator-tests. Based on the previous work developed on common repository:
 https://github.com/RedHat-SP-Security/tests
 
