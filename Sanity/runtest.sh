@@ -66,6 +66,7 @@ TOP_SECRET_WORDS="top secret"
 DELETE_TMP_DIR="YES"
 [ -n "$TANG_IMAGE" ] || TANG_IMAGE="registry.redhat.io/rhel9/tang"
 
+
 test -z "${VERSION}" && VERSION="latest"
 test -z "${DISABLE_BUNDLE_INSTALL_TESTS}" && DISABLE_BUNDLE_INSTALL_TESTS="0"
 test -z "${DISABLE_BUNDLE_UNINSTALL_TESTS}" && DISABLE_BUNDLE_UNINSTALL_TESTS="0"
@@ -105,6 +106,8 @@ dumpInfo() {
     rlLog "OC_CLIENT:${OC_CLIENT}"
     rlLog "RUN_BUNDLE_PARAMS:${RUN_BUNDLE_PARAMS}"
     rlLog "EXECUTION_MODE:${EXECUTION_MODE}"
+    rlLog "ID:$(id)"
+    rlLog "WHOAMI:$(whoami)"
     rlLog "vvvvvvvvv IP vvvvvvvvvv"
     ip a | grep 'inet '
     rlLog "^^^^^^^^^ IP ^^^^^^^^^^"
@@ -779,7 +782,13 @@ getVersion() {
 analyzeVersion() {
     dumpVerbose "DETECTING MALWARE ON VERSION:[${1}]"
     "${CONTAINER_MGR}" pull "${1}"
-    dir_mount=$("${CONTAINER_MGR}" unshare ./scripts/mount_image.sh -v "${1}" -c "${CONTAINER_MGR}")
+    user=$(whoami | tr -d ' ' | awk '{print $1}')
+    if [ "${user}" == "root" ]; then
+        freshclam
+        dir_mount=$(./scripts/mount_image.sh -v "${1}" -c "${CONTAINER_MGR}")
+    else
+        dir_mount=$("${CONTAINER_MGR}" unshare ./scripts/mount_image.sh -v "${1}" -c "${CONTAINER_MGR}")
+    fi
     rlAssertEquals "Checking image could be mounted appropriately" "$?" "0"
     analyzed_dir=$(echo "${dir_mount}" | sed -e 's@/merged@@g')
     dumpVerbose "Analyzing directory:[${analyzed_dir}]"
@@ -792,7 +801,11 @@ analyzeVersion() {
         rlLogWarning "${infected_files} Infected Files Detected!"
         rlLogWarning "Please, review Malware Detection log file: ${tmpdir}/${prefix}_malware.log"
     fi
-    "${CONTAINER_MGR}" unshare ./scripts/umount_image.sh -v "${1}" -c "${CONTAINER_MGR}"
+    if [ "${user}" == "root" ]; then
+        ./scripts/umount_image.sh -v "${1}" -c "${CONTAINER_MGR}"
+    else
+        "${CONTAINER_MGR}" unshare ./scripts/umount_image.sh -v "${1}" -c "${CONTAINER_MGR}"
+    fi
     rlAssertEquals "Checking image could be umounted appropriately" "$?" "0"
 }
 
