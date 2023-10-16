@@ -57,10 +57,6 @@ TO_ACTIVE_KEYS=60 #seconds
 TO_HIDDEN_KEYS=60 #seconds
 TO_SERVICE_UP=180 #seconds
 ADV_PATH="adv"
-QUAY_PATH="quay_secret"
-QUAY_FILE_NAME_TO_FILL="daemons_v1alpha1_tangserver_secret_registry_redhat_io.yaml"
-QUAY_FILE_NAME_PATH="${QUAY_PATH}/${QUAY_FILE_NAME_TO_FILL}"
-QUAY_FILE_NAME_TO_FILL_UNFILLED_MD5="db099cc0b92220feb7a38783b02df897"
 OC_DEFAULT_CLIENT="kubectl"
 TOP_SECRET_WORDS="top secret"
 DELETE_TMP_DIR="YES"
@@ -735,24 +731,6 @@ dumpOpenShiftClientStatus() {
     return 0
 }
 
-installSecret() {
-    if [ ${EXECUTION_MODE} == "MINIKUBE" ];
-    then
-        ## Only required for Minikube
-        local md5sum_secret
-        md5sum_secret=$(md5sum "${QUAY_FILE_NAME_PATH}" | awk '{print $1}')
-        if [ "${md5sum_secret}" == "${QUAY_FILE_NAME_TO_FILL_UNFILLED_MD5}" ];
-        then
-             rlDie "Need to fill secret file for quay on MINIKUBE execution mode"
-        else
-            "${OC_CLIENT}" apply -f "${QUAY_FILE_NAME_PATH}"
-        fi
-        return $?
-    else
-        return 0
-    fi
-}
-
 installScPv() {
     if [ ${EXECUTION_MODE} == "CLUSTER" ];
     then
@@ -834,9 +812,6 @@ rlJournalStart
         #go through all the files and set substition for TANG_IMAGE keyword
         if [ -n "$TANG_IMAGE" ]; then
             useUpstreamImages
-        fi
-        if [ "$CI" != true ]; then
-            rlRun "installSecret" 0 "Installing secret if necessary"
         fi
     rlPhaseEnd
 
