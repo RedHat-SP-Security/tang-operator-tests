@@ -104,6 +104,7 @@ dumpInfo() {
     rlLog "EXECUTION_MODE:${EXECUTION_MODE}"
     rlLog "ID:$(id)"
     rlLog "WHOAMI:$(whoami)"
+    rlLog "TANG_IMAGE:${TANG_IMAGE}"
     rlLog "vvvvvvvvv IP vvvvvvvvvv"
     ip a | grep 'inet '
     rlLog "^^^^^^^^^ IP ^^^^^^^^^^"
@@ -788,9 +789,9 @@ analyzeVersion() {
 }
 
 useUpstreamImages(){
-    for yaml_file in $(find . -iname "*.yaml" -type f -print)
+    for yaml_file in `find reg_test \( -iname "*.yaml" -o -iname "*.sh" \) -type f -print`
     do
-        sed -i "s~\"registry.redhat.io/rhel9/tang\"~$TANG_IMAGE~g" $yaml_file      
+        sed -i "s~\"registry.redhat.io/rhel9/tang\"~\"${TANG_IMAGE}\"~g" $yaml_file
     done
 }
 
