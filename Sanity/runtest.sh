@@ -797,7 +797,7 @@ analyzeVersion() {
 }
 
 useUpstreamImages(){
-    for yaml_file in $(find . -type f -print)
+    for yaml_file in $(find . -iname "*.yaml" -type f -print)
     do
         sed -i "s~\"registry.redhat.io/rhel9/tang\"~$TANG_IMAGE~g" $yaml_file      
     done
