@@ -1155,9 +1155,15 @@ rlJournalStart
             wget -O tang_operator.yaml https://raw.githubusercontent.com/latchset/tang-operator/main/tools/scan_tools/tang_operator_template.yaml
 
             # 4 - adapt configuration file template (token, machine)
-            API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d  ' ')
-            DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" $("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}"\
-                            | grep ^tang-operator | grep service-account | awk '{print $1}') -o json | jq -Mr '.data.token' | base64 -d)
+            if [ "${EXECUTION_MODE}" == "MINIKUBE" ];
+            then
+                API_HOST_PORT=$(minikube ip)
+                DEFAULT_TOKEN="TEST_TOKEN_UNREQUIRED_IN_MINIKUBE"
+            else
+                API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d  ' ')
+                DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" $("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}"\
+                                | grep ^tang-operator | grep service-account | awk '{print $1}') -o json | jq -Mr '.data.token' | base64 -d)
+            fi
             sed -i s@"API_HOST_PORT_HERE"@"${API_HOST_PORT}"@g tang_operator.yaml
             sed -i s@"AUTH_TOKEN_HERE"@"${DEFAULT_TOKEN}"@g tang_operator.yaml
             sed -i s@"OPERATOR_NAMESPACE_HERE"@"${OPERATOR_NAMESPACE}"@g tang_operator.yaml
