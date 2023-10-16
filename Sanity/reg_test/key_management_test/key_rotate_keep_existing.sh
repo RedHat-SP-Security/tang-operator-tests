@@ -47,6 +47,8 @@ metadata:
   - finalizer.daemons.tangserver.redhat.com
 spec:
   replicas: ${replicas}
+  image: "registry.redhat.io/rhel9/tang"
+  version: "latest"
   hiddenKeys:
   - sha1: ${sha1_1}
   - sha1: ${hsha1_1}

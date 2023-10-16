@@ -64,6 +64,7 @@ QUAY_FILE_NAME_TO_FILL_UNFILLED_MD5="db099cc0b92220feb7a38783b02df897"
 OC_DEFAULT_CLIENT="kubectl"
 TOP_SECRET_WORDS="top secret"
 DELETE_TMP_DIR="YES"
+[ -n "$TANG_IMAGE" ] || TANG_IMAGE="registry.redhat.io/rhel9/tang"
 
 test -z "${VERSION}" && VERSION="latest"
 test -z "${DISABLE_BUNDLE_INSTALL_TESTS}" && DISABLE_BUNDLE_INSTALL_TESTS="0"
@@ -778,7 +779,7 @@ getVersion() {
 analyzeVersion() {
     dumpVerbose "DETECTING MALWARE ON VERSION:[${1}]"
     "${CONTAINER_MGR}" pull "${1}"
-    dir_mount=$("${CONTAINER_MGR}" unshare ./mount_image.sh -v "${1}" -c "${CONTAINER_MGR}")
+    dir_mount=$("${CONTAINER_MGR}" unshare ./scripts/mount_image.sh -v "${1}" -c "${CONTAINER_MGR}")
     rlAssertEquals "Checking image could be mounted appropriately" "$?" "0"
     analyzed_dir=$(echo "${dir_mount}" | sed -e 's@/merged@@g')
     dumpVerbose "Analyzing directory:[${analyzed_dir}]"
@@ -791,8 +792,15 @@ analyzeVersion() {
         rlLogWarning "${infected_files} Infected Files Detected!"
         rlLogWarning "Please, review Malware Detection log file: ${tmpdir}/${prefix}_malware.log"
     fi
-    "${CONTAINER_MGR}" unshare ./umount_image.sh -v "${1}" -c "${CONTAINER_MGR}"
+    "${CONTAINER_MGR}" unshare ./scripts/umount_image.sh -v "${1}" -c "${CONTAINER_MGR}"
     rlAssertEquals "Checking image could be umounted appropriately" "$?" "0"
+}
+
+useUpstreamImages(){
+    for yaml_file in $(find . -type f -print)
+    do
+        sed -i "s~\"registry.redhat.io/rhel9/tang\"~$TANG_IMAGE~g" $yaml_file      
+    done
 }
 
 rlJournalStart
@@ -810,7 +818,13 @@ rlJournalStart
         rlRun "bundleStart" 0 "Installing tang-operator-bundle version:${VERSION}"
         rlRun "${OC_CLIENT} apply -f ${TEST_NAMESPACE_FILE}" 0 "Creating test namespace:${TEST_NAMESPACE}"
         rlRun "${OC_CLIENT} get namespace ${TEST_NAMESPACE}" 0 "Checking test namespace:${TEST_NAMESPACE}"
-        rlRun "installSecret" 0 "Installing secret if necessary"
+        #go through all the files and set substition for TANG_IMAGE keyword
+        if [ -n "$TANG_IMAGE" ]; then
+            useUpstreamImages
+        fi
+        if [ "$CI" != true ]; then
+            rlRun "installSecret" 0 "Installing secret if necessary"
+        fi
     rlPhaseEnd
 
     ########## CHECK CONTROLLER RUNNING #########

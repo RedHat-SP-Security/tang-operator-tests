@@ -1,4 +1,4 @@
-summary: Deployment and basic functionality of the tang operator
+summary: Basic functionality of the tang operator
 description: ''
 contact: Martin Zelený <mzeleny@redhat.com>
 component:
@@ -7,6 +7,13 @@ test: ./runtest.sh
 recommend:
   - tang
   - clevis
+require:
+  - jq
+  - helm
+  - clamav
+  - clamav-freshclam
+  - podman
+  - git
 duration: 30m
 enabled: true
 tag:

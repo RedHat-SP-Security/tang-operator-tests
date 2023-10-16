@@ -7,4 +7,6 @@ metadata:
   finalizers:
     - finalizer.daemons.tangserver.redhat.com
 spec:
+  image: "registry.redhat.io/rhel9/tang"
+  version: "latest"
   replicas: 1
