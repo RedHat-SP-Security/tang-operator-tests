@@ -1180,11 +1180,13 @@ rlJournalStart
             report_dir=$(ls -1d ${tmpdir}/rapidast/tangservers/DAST*tangservers/ | head -1 | sed -e 's@/$@@g')
             dumpVerbose "REPORT DIR:${report_dir}"
             alerts=$(cat "${report_dir}/zap/zap-report.json" | jq '.site[0].alerts | length')
+            rlLog "Detected a total of [${alerts}] alerts"
+            rlAssertEquals "${alerts}" "123456789"
             for ((alert=0; ix<${alerts}; ix++));
             do
                 risk_desc=$(cat "${report_dir}/zap/zap-report.json" | jq ".site[0].alerts[${alert}].riskdesc" | awk '{print $1}' | tr -d '"' | tr -d " ")
                 rlLog "Alert[${alert}] -> Priority:[${risk_desc}]"
-                rlAssertNotEquals "Checking alarm is not High Risk" "${risk_desc}" "High"
+                rlAssertEquals "Checking alarm is High Risk" "${risk_desc}" "High"
             done
             if [ "${alerts}" != "0" ];
             then
