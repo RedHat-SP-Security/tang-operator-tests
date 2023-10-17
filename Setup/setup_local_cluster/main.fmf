@@ -5,7 +5,6 @@ contact: Patrik Koncity <pkoncity@redhat.com>
 component:
   - tang
 test: ./runtest.sh
-framework: beakerlib
 tag:
   - CI-Tier-1
 require:
