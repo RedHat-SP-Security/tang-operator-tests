@@ -26,7 +26,8 @@ Execute Test suite (through make command):
 $ make
 ```
 
-Previous command will install the latest version of the upstream project. In case a specific version wants to be executed instead, it can be done through next command:
+Previous command will install the latest version of the upstream project, that corresponds to version "quay.io/sec-eng-special/tang-operator-bundle:latest".
+In case a specific version wants to be executed instead, it can be done through next command:
 ```bash
 $ IMAGE_VERSION="quay.io/sec-eng-special/tang-operator-bundle:v0.0.26" make
 ```
