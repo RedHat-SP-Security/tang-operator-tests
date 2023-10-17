@@ -2,12 +2,14 @@
 Upstream repository for tang-operator-tests. Based on the previous work developed on common repository:
 https://github.com/RedHat-SP-Security/tests
 
-In order to execute this test suite, you will need some software installed in your terminal:
-- A K8S/OpenShift cluster
+In order to execute tang-operator test suite, you will need some software installed in your machine:
+- A K8S/OpenShift/minikube cluster
 - kubectl/oc
-- helm (for DAST tests execution)
-- podman (for Malware Detection execution)
-- clamav (for Malware Detection execution)
+- helm (for DAST test execution)
+- podman (for Malware Detection test execution)
+- clamav (for Malware Detection test execution)
+
+In case `helm`, `podman` or `clamav` does not exist, tests requiring its installation won't be executed.
 
 To execute the test suite, next steps must be followed:
 
