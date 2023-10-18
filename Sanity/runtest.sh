@@ -83,7 +83,7 @@ dumpVerbose() {
 commandVerbose() {
     if [ "${V}" == "1" ] || [ "${VERBOSE}" == "1" ];
     then
-        $*
+        "$@"
     fi
 }
 
@@ -196,12 +196,9 @@ checkPodKilled() {
     while [ ${counter} -lt ${iterations} ];
     do
         if [ "${V}" == "1" ] || [ "${VERBOSE}" == "1" ]; then
-            "${OC_CLIENT}" -n "${namespace}" get pod "${pod_name}"
+            "${OC_CLIENT}" -n "${namespace}" get pod "${pod_name}" || return 0
         else
-            "${OC_CLIENT}" -n "${namespace}" get pod "${pod_name}" 2>/dev/null 1>/dev/null
-        fi
-        if [ $? -ne 0 ]; then
-            return 0
+            "${OC_CLIENT}" -n "${namespace}" get pod "${pod_name}" 2>/dev/null 1>/dev/null || return 0
         fi
         counter=$((counter+1))
         sleep 1
@@ -222,6 +219,9 @@ checkPodState() {
       dumpVerbose "POD STATUS:${pod_status} EXPECTED:${expected} COUNTER:${counter}/${iterations}"
       if [ "${pod_status}" == "${expected}" ]; then
         return 0
+      fi
+      if [ "${pod_status}" == "Error" ]; then
+        return 1
       fi
       counter=$((counter+1))
       sleep 1
@@ -258,12 +258,9 @@ checkServiceUp() {
     while [ ${counter} -lt ${iterations} ];
     do
         if [ "${V}" == "1" ] || [ "${VERBOSE}" == "1" ]; then
-            wget -O /dev/null -o /dev/null --timeout=${TO_WGET_CONNECTION} ${http_service}
+            wget -O /dev/null -o /dev/null --timeout=${TO_WGET_CONNECTION} "${http_service}" && return 0
         else
-            wget -O /dev/null -o /dev/null --timeout=${TO_WGET_CONNECTION} ${http_service} 2>/dev/null 1>/dev/null
-        fi
-        if [ $? -eq 0 ]; then
-            return 0
+            wget -O /dev/null -o /dev/null --timeout=${TO_WGET_CONNECTION} "${http_service}" 2>/dev/null 1>/dev/null && return 0
         fi
         counter=$((counter+1))
         dumpVerbose "WAITING SERVICE:${http_service} UP, COUNTER:${counter}/${iterations}"
@@ -568,7 +565,7 @@ checkStatusReadyReplicas() {
 }
 
 uninstallDownstreamVersion() {
-    pushd ${tmpdir}/tang-operator/tools/index_tools
+    pushd "${tmpdir}/tang-operator/tools/index_tools" || return 1
     if [ "${V}" == "1" ] || [ "${VERBOSE}" == "1" ];
     then
         ./tang_uninstall_catalog.sh || err=1
@@ -582,11 +579,12 @@ uninstallDownstreamVersion() {
 installDownstreamVersion() {
     local err=0
     # Download required tools
-    pushd ${tmpdir}
+    pushd "${tmpdir}" || return 1
     # WARNING: if tang-operator is changed to OpenShift organization, change this
     git clone https://github.com/latchset/tang-operator
-    pushd tang-operator/tools/index_tools
-    local downstream_version=$(echo ${DOWNSTREAM_IMAGE_VERSION} | awk -F ':' '{print $2}')
+    pushd tang-operator/tools/index_tools || return 1
+    local downstream_version
+    downstream_version=$(echo "${DOWNSTREAM_IMAGE_VERSION}" | awk -F ':' '{print $2}')
     dumpVerbose "Installing Downstream version: ${DOWNSTREAM_IMAGE_VERSION} DOWNSTREAM_VERSION:[${downstream_version}]"
     rlLog "Indexing and installing catalog"
     if [ "${V}" == "1" ] || [ "${VERBOSE}" == "1" ];
@@ -615,9 +613,9 @@ bundleStart() {
     fi
     if [ "${V}" == "1" ] || [ "${VERBOSE}" == "1" ];
     then
-      operator-sdk --verbose run bundle --timeout ${TO_BUNDLE} ${IMAGE_VERSION} ${RUN_BUNDLE_PARAMS} --namespace ${OPERATOR_NAMESPACE}
+      operator-sdk --verbose run bundle --timeout "${TO_BUNDLE}" "${IMAGE_VERSION}" ${RUN_BUNDLE_PARAMS} --namespace "${OPERATOR_NAMESPACE}"
     else
-      operator-sdk run bundle --timeout ${TO_BUNDLE} ${IMAGE_VERSION} ${RUN_BUNDLE_PARAMS} --namespace ${OPERATOR_NAMESPACE} 2>/dev/null
+      operator-sdk run bundle --timeout "${TO_BUNDLE}" "${IMAGE_VERSION}" ${RUN_BUNDLE_PARAMS} --namespace "${OPERATOR_NAMESPACE}" 2>/dev/null
     fi
     return $?
 }
@@ -630,15 +628,13 @@ bundleInitialStop() {
     fi
     if [ "${V}" == "1" ] || [ "${VERBOSE}" == "1" ];
     then
-        operator-sdk --verbose cleanup tang-operator --namespace ${OPERATOR_NAMESPACE}
+        operator-sdk --verbose cleanup tang-operator --namespace "${OPERATOR_NAMESPACE}" &&\
+            checkPodAmount 0 "${TO_ALL_POD_CONTROLLER_TERMINATE}" "${OPERATOR_NAMESPACE}"
     else
-        operator-sdk cleanup tang-operator --namespace ${OPERATOR_NAMESPACE} 2>/dev/null
+        operator-sdk cleanup tang-operator --namespace "${OPERATOR_NAMESPACE}" 2>/dev/null &&\
+            checkPodAmount 0 "${TO_ALL_POD_CONTROLLER_TERMINATE}" "${OPERATOR_NAMESPACE}"
     fi
-    if [ $? -eq 0 ];
-    then
-        checkPodAmount 0 ${TO_ALL_POD_CONTROLLER_TERMINATE} ${OPERATOR_NAMESPACE}
-    fi
-    return 0
+    return $?
 }
 
 
@@ -655,15 +651,14 @@ bundleStop() {
     fi
     if [ "${V}" == "1" ] || [ "${VERBOSE}" == "1" ];
     then
-        operator-sdk cleanup tang-operator --namespace ${OPERATOR_NAMESPACE}
+        operator-sdk cleanup tang-operator --namespace "${OPERATOR_NAMESPACE}" &&\
+            checkPodAmount 0 "${TO_ALL_POD_CONTROLLER_TERMINATE}" "${OPERATOR_NAMESPACE}"
+
     else
-        operator-sdk cleanup tang-operator --namespace ${OPERATOR_NAMESPACE} 2>/dev/null
+        operator-sdk cleanup tang-operator --namespace "${OPERATOR_NAMESPACE}" 2>/dev/null &&\
+            checkPodAmount 0 "${TO_ALL_POD_CONTROLLER_TERMINATE}" "${OPERATOR_NAMESPACE}"
     fi
-    if [ $? -eq 0 ];
-    then
-        checkPodAmount 0 ${TO_ALL_POD_CONTROLLER_TERMINATE} ${OPERATOR_NAMESPACE}
-    fi
-    return 0
+    return $?
 }
 
 getPodCpuRequest() {
@@ -671,8 +666,8 @@ getPodCpuRequest() {
     local namespace=$2
     dumpVerbose "Getting POD:[${pod_name}](Namespace:[${namespace}]) CPU Request ..."
     local cpu
-    cpu=$("${OC_CLIENT}" -n "${namespace}" describe pod "${pod_name}" | grep -i Requests -A2 | grep 'cpu' | awk -F ":" '{print $2}' | tr -d ' ' | tr -d "[A-Z,a-z]")
-    dumpVerbose "CPU REQUEST COMMAND:["${OC_CLIENT}" -n "${namespace}" describe pod ${pod_name} | grep -i Requests -A2 | grep 'cpu' | awk -F ':' '{print $2}' | tr -d ' ' | tr -d \"[A-Z,a-z]\""
+    cpu=$("${OC_CLIENT}" -n "${namespace}" describe pod "${pod_name}" | grep -i Requests -A2 | grep 'cpu' | awk -F ":" '{print $2}' | tr -d ' ' | tr -d "A-Z,a-z")
+    dumpVerbose "CPU REQUEST COMMAND:[${OC_CLIENT} -n ${namespace} describe pod ${pod_name} | grep -i Requests -A2 | grep 'cpu' | awk -F ':' '{print $2}' | tr -d ' ' | tr -d \"A-Z,a-z\""
     dumpVerbose "POD:[${pod_name}](Namespace:[${namespace}]) CPU Request:[${cpu}]"
     echo "${cpu}"
 }
@@ -704,7 +699,7 @@ getPodMemRequest() {
             mult=1
             ;;
     esac
-    dumpVerbose "MEM REQUEST COMMAND:["${OC_CLIENT}" -n "${namespace}" describe pod ${pod_name} | grep -i Requests -A2 | grep 'memory' | awk -F ':' '{print $2}' | tr -d ' '"
+    dumpVerbose "MEM REQUEST COMMAND:[${OC_CLIENT} -n ${namespace} describe pod ${pod_name} | grep -i Requests -A2 | grep 'memory' | awk -F ':' '{print $2}' | tr -d ' '"
     dumpVerbose "POD:[${pod_name}](Namespace:[${namespace}]) MEM Request With Unit:[${mem}] Unit:[${unit}] Mult:[${mult}]"
     local mem_no_unit
     mem_no_unit="${mem/${unit}/}"
@@ -791,7 +786,8 @@ analyzeVersion() {
 useUpstreamImages(){
     for yaml_file in `find reg_test \( -iname "*.yaml" -o -iname "*.sh" \) -type f -print`
     do
-        sed -i "s~\"registry.redhat.io/rhel9/tang\"~\"${TANG_IMAGE}\"~g" $yaml_file
+        dumpVerbose "${yaml_file}: substituting upstream image with:${TANG_IMAGE}"
+        sed -i "s~\"registry.redhat.io/rhel9/tang\"~\"${TANG_IMAGE}\"~g" "${yaml_file}"
     done
 }
 
@@ -801,7 +797,9 @@ rlJournalStart
     dumpDate
     dumpInfo
     rlPhaseStartSetup
-        rlRun "tmpdir=\$(mktemp -d)" 0 "Creating tmp directory"
+        rlLog "Creating tmp directory"
+        tmpdir=$(mktemp -d)
+        rlAssertNotEquals "Checking temporary directory name not empty" "${tmpdir}" ""
         rlRun "dumpOpenShiftClientStatus" 0 "Checking OpenshiftClient installation"
         rlRun "operator-sdk version > /dev/null" 0 "Checking operator-sdk installation"
         rlRun "checkClusterStatus" 0 "Checking cluster status"
@@ -819,7 +817,7 @@ rlJournalStart
     ########## CHECK CONTROLLER RUNNING #########
     rlPhaseStartTest "Check tang-operator controller is running"
         controller_name=$(getPodNameWithPrefix "tang-operator-controller" "${OPERATOR_NAMESPACE}" "${TO_POD_START}")
-        rlRun "checkPodState Running ${TO_POD_START} "${OPERATOR_NAMESPACE}" ${controller_name}" 0 "Checking controller POD in Running [Timeout=${TO_POD_START} secs.]"
+        rlRun "checkPodState Running ${TO_POD_START} ${OPERATOR_NAMESPACE} ${controller_name}" 0 "Checking controller POD in Running [Timeout=${TO_POD_START} secs.]"
     rlPhaseEnd
 
     ############# KEY MANAGEMENT TESTS ############
@@ -861,8 +859,7 @@ rlJournalStart
         rlRun "${OC_CLIENT} apply -f reg_test/key_management_test/multiple-keyretrieve/daemons_v1alpha1_clusterrole.yaml" 0 "Creating multiple key management test clusterrole"
         rlRun "${OC_CLIENT} apply -f reg_test/key_management_test/multiple-keyretrieve/daemons_v1alpha1_pv.yaml" 0 "Creating multiple key management test pv"
         rlRun "${OC_CLIENT} apply -f reg_test/key_management_test/multiple-keyretrieve/daemons_v1alpha1_tangserver.yaml" 0 "Creating multiple key management test tangserver"
-        cat reg_test/key_management_test/multiple-keyretrieve/daemons_v1alpha1_clusterrolebinding.yaml \
-          | sed "s/{{OPERATOR_NAMESPACE}}/${OPERATOR_NAMESPACE}/g" | ${OC_CLIENT} apply -f -
+        sed "s/{{OPERATOR_NAMESPACE}}/${OPERATOR_NAMESPACE}/g" < reg_test/key_management_test/multiple-keyretrieve/daemons_v1alpha1_clusterrolebinding.yaml | ${OC_CLIENT} apply -f -
         rlRun "checkPodAmount 3 ${TO_POD_START} ${TEST_NAMESPACE}" 0 "Checking 3 PODs are started [Timeout=${TO_POD_START} secs.]"
         pod1_name=$(getPodNameWithPrefix "tang" "${TEST_NAMESPACE}" 5 1)
         pod2_name=$(getPodNameWithPrefix "tang" "${TEST_NAMESPACE}" 5 2)
@@ -875,8 +872,7 @@ rlJournalStart
         rlRun "${OC_CLIENT} delete -f reg_test/key_management_test/multiple-keyretrieve/daemons_v1alpha1_clusterrole.yaml" 0 "Deleting key management test clusterrole"
         rlRun "${OC_CLIENT} delete -f reg_test/key_management_test/multiple-keyretrieve/daemons_v1alpha1_tangserver.yaml" 0 "Deleting key management test tangserver"
         rlRun "${OC_CLIENT} delete -f reg_test/key_management_test/multiple-keyretrieve/daemons_v1alpha1_pv.yaml" 0 "Deleting key management test pv"
-        cat reg_test/key_management_test/multiple-keyretrieve/daemons_v1alpha1_clusterrolebinding.yaml \
-          | sed "s/{{OPERATOR_NAMESPACE}}/${OPERATOR_NAMESPACE}/g" | ${OC_CLIENT} delete -f -
+        sed "s/{{OPERATOR_NAMESPACE}}/${OPERATOR_NAMESPACE}/g" < reg_test/key_management_test/multiple-keyretrieve/daemons_v1alpha1_clusterrolebinding.yaml | ${OC_CLIENT} delete -f -
         rlRun "checkPodAmount 0 ${TO_POD_STOP} ${TEST_NAMESPACE}" 0 "Checking no PODs continue running [Timeout=${TO_POD_STOP} secs.]"
         rlRun "checkServiceAmount 0 ${TO_SERVICE_STOP} ${TEST_NAMESPACE}" 0 "Checking no Services continue running [Timeout=${TO_SERVICE_STOP} secs.]"
     rlPhaseEnd
@@ -972,7 +968,7 @@ rlJournalStart
         rlRun "serviceAdv ${service_ip} ${service_port}" 0 "Checking Service Advertisement [IP/HOST:${service_ip} PORT:${service_port}]"
 
         rlRun "echo \"${TOP_SECRET_WORDS}\" | clevis encrypt tang '{\"url\":\"http://${service_ip}:${service_port}\"}' -y > ${tmpdir}/test_secret_words.jwe"
-        rlRun "decrypted=\$(clevis decrypt < ${tmpdir}/test_secret_words.jwe)"
+        decrypted=$(clevis decrypt < "${tmpdir}/test_secret_words.jwe")
         rlAssertEquals "Checking clevis decryption worked properly" "${decrypted}" "${TOP_SECRET_WORDS}"
 
         rlRun "${OC_CLIENT} delete -f reg_test/func_test/unique_deployment_test/" 0 "Deleting unique deployment"
@@ -1081,8 +1077,8 @@ rlJournalStart
         rlRun "checkPodState Running ${TO_POD_START} ${TEST_NAMESPACE} ${pod2_name}" 0 "Checking POD:[$pod2_name}] in Running state [Timeout=${TO_POD_START} secs.]"
         cpu2=$(getPodCpuRequest "${pod2_name}" "${TEST_NAMESPACE}")
         mem2=$(getPodMemRequest "${pod2_name}" "${TEST_NAMESPACE}")
-        rlAssertGreater "Checking cpu request value increased" ${cpu2} ${cpu1}
-        rlAssertGreater "Checking mem request value increased" ${mem2} ${mem1}
+        rlAssertGreater "Checking cpu request value increased" "${cpu2}" "${cpu1}"
+        rlAssertGreater "Checking mem request value increased" "${mem2}" "${mem1}"
         rlRun "${OC_CLIENT} delete -f reg_test/scale_test/scale_up/scale_up0/" 0 "Deleting scale up test"
         rlRun "checkPodAmount 0 ${TO_POD_STOP} ${TEST_NAMESPACE}" 0 "Checking no PODs continue running [Timeout=${TO_POD_STOP} secs.]"
         rlRun "checkServiceAmount 0 ${TO_SERVICE_STOP} ${TEST_NAMESPACE}" 0 "Checking no Services continue running [Timeout=${TO_SERVICE_STOP} secs.]"
@@ -1129,7 +1125,7 @@ rlJournalStart
     rlPhaseEnd
     ############# /LEGACY TESTS ###########
 
-    ############# DAST TESTS ############
+    ############# DAST TESTS ##############
     ### Only execute DAST TESTS if helm command exists ...
     command -v helm >/dev/null && {
         rlPhaseStartTest "Dynamic Application Security Testing"
@@ -1137,7 +1133,7 @@ rlJournalStart
             dumpVerbose "$(helm version)"
 
             # 2 - clone rapidast code (development branch)
-            pushd "${tmpdir}" && git clone https://github.com/RedHatProductSecurity/rapidast.git -b development
+            pushd "${tmpdir}" && git clone https://github.com/RedHatProductSecurity/rapidast.git -b development || exit
 
             # 3 - download configuration file template
             # WARNING: if tang-operator is changed to OpenShift organization, change this
@@ -1150,19 +1146,19 @@ rlJournalStart
                 DEFAULT_TOKEN="TEST_TOKEN_UNREQUIRED_IN_MINIKUBE"
             else
                 API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d  ' ')
-                DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" $("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}"\
-                                | grep ^tang-operator | grep service-account | awk '{print $1}') -o json | jq -Mr '.data.token' | base64 -d)
+                DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" "$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}"\
+                                | grep ^tang-operator | grep service-account | awk '{print $1}')" -o json | jq -Mr '.data.token' | base64 -d)
             fi
-            sed -i s@"API_HOST_PORT_HERE"@"${API_HOST_PORT}"@g tang_operator.yaml
-            sed -i s@"AUTH_TOKEN_HERE"@"${DEFAULT_TOKEN}"@g tang_operator.yaml
-            sed -i s@"OPERATOR_NAMESPACE_HERE"@"${OPERATOR_NAMESPACE}"@g tang_operator.yaml
+            sed -i s@API_HOST_PORT_HERE@"${API_HOST_PORT}"@g tang_operator.yaml
+            sed -i s@AUTH_TOKEN_HERE@"${DEFAULT_TOKEN}"@g tang_operator.yaml
+            sed -i s@OPERATOR_NAMESPACE_HERE@"${OPERATOR_NAMESPACE}"@g tang_operator.yaml
             dumpVerbose "API_HOST_PORT:[${API_HOST_PORT}]"
             dumpVerbose "DEFAULT_TOKEN:[${DEFAULT_TOKEN}]"
             dumpVerbose "OPERATOR_NAMESPACE provided to DAST:[${OPERATOR_NAMESPACE}]"
             rlAssertNotEquals "Checking token not empty" "${DEFAULT_TOKEN}" ""
 
             # 5 - adapt helm
-            pushd rapidast
+            pushd rapidast || exit
             sed -i s@"kubectl --kubeconfig=./kubeconfig "@"${OC_CLIENT} "@g helm/results.sh
             sed -i s@"secContext: '{}'"@"secContext: '{\"privileged\": true}'"@ helm/chart/values.yaml
             sed -i s@'tag: "latest"'@'tag: "2.3.0-rc1"'@g helm/chart/values.yaml
@@ -1177,33 +1173,47 @@ rlJournalStart
 
             # 8 - parse results (do not have to ensure no previous results exist, as this is a temporary directory)
             # Check no alarm exist ...
-            report_dir=$(ls -1d ${tmpdir}/rapidast/tangservers/DAST*tangservers/ | head -1 | sed -e 's@/$@@g')
+            report_dir=$(ls -1d "${tmpdir}"/rapidast/tangservers/DAST*tangservers/ | head -1 | sed -e 's@/$@@g')
             dumpVerbose "REPORT DIR:${report_dir}"
-            alerts=$(cat "${report_dir}/zap/zap-report.json" | jq '.site[0].alerts | length')
-            for ((alert=0; ix<${alerts}; ix++));
-            do
-                risk_desc=$(cat "${report_dir}/zap/zap-report.json" | jq ".site[0].alerts[${alert}].riskdesc" | awk '{print $1}' | tr -d '"' | tr -d " ")
-                rlLog "Alert[${alert}] -> Priority:[${risk_desc}]"
-                rlAssertNotEquals "Checking alarm is not High Risk" "${risk_desc}" "High"
-            done
-            if [ "${alerts}" != "0" ];
+
+            rlAssertNotEquals "Checking report_dir not empty" "${report_dir}" ""
+
+            report_file="${report_dir}/zap/zap-report.json"
+            dumpVerbose "REPORT FILE:${report_file}"
+
+            if [ -n "${report_dir}" ] && [ -f "${report_file}" ];
             then
-                DELETE_TMP_DIR="NO"
-                rlLogWarning "A total of [${alerts}] alerts were detected! Please, review ZAP report: ${report_dir}/zap/zap-report.json"
+                alerts=$(jq '.site[0].alerts | length' < "${report_dir}/zap/zap-report.json" )
+                dumpVerbose "Alerts:${alerts}"
+                for ((alert=0; alert<alerts; alert++));
+                do
+                    risk_desc=$(jq ".site[0].alerts[${alert}].riskdesc" < "${report_dir}/zap/zap-report.json" | awk '{print $1}' | tr -d '"' | tr -d " ")
+                    rlLog "Alert[${alert}] -> Priority:[${risk_desc}]"
+                    rlAssertNotEquals "Checking alarm is not High Risk" "${risk_desc}" "High"
+                done
+                if [ "${alerts}" != "0" ];
+                then
+                    DELETE_TMP_DIR="NO"
+                    rlLogWarning "A total of [${alerts}] alerts were detected! Please, review ZAP report: ${report_dir}/zap/zap-report.json"
+                else
+                    rlLog "No alerts detected"
+                fi
             else
-                rlLog "No alerts detected"
+                rlLogWarning "Report file:${report_dir}/zap/zap-report.json does not exist"
+                ### Keep tmp dir for investigation on what could go wrong
+                DELETE_TMP_DIR="NO"
             fi
 
             # 9 - clean helm installation
             helm uninstall rapidast
 
             # 10 - return
-            popd
-            popd
+            popd || exit
+            popd || exit
 
         rlPhaseEnd
     }
-    ############# /DAST TESTS ###########
+    ############# /DAST TESTS #############
 
     ############# MALWARE DETECTION TESTS ############
     ### Only execute if podman and clamscan commands exist ...
