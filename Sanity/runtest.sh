@@ -784,9 +784,9 @@ analyzeVersion() {
 }
 
 useUpstreamImages(){
-    for yaml_file in `find reg_test \( -iname "*.yaml" -o -iname "*.sh" \) -type f -print`
+    find reg_test \( -iname "*.yaml" -o -iname "*.sh" \) -type f -print | while read -r yaml_file;
     do
-        dumpVerbose "${yaml_file}: substituting upstream image with:${TANG_IMAGE}"
+        dumpVerbose "${yaml_file}: substituting upstream image with:[\"${TANG_IMAGE}\"]"
         sed -i "s~\"registry.redhat.io/rhel9/tang\"~\"${TANG_IMAGE}\"~g" "${yaml_file}"
     done
 }
