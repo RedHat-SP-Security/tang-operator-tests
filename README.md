@@ -2,6 +2,13 @@
 Upstream repository for tang-operator-tests. Based on the previous work developed on common repository:
 https://github.com/RedHat-SP-Security/tests
 
+This test suite is supposed to be executed and maintained via Test Managament Tool (`tmt`).
+The data are structured in flexible metadata format (`fmf`).
+
+For more information about `tmt` and `fmf`, please visit:
+* https://github.com/teemtee/tmt
+* https://github.com/teemtee/fmf
+
 In order to execute tang-operator test suite, you will need some software installed in your machine:
 - A K8S/OpenShift/minikube cluster
 - kubectl/oc
