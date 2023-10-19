@@ -10,7 +10,7 @@ For more information about `tmt` and `fmf`, please visit:
 * https://github.com/teemtee/fmf
 
 In order to execute tang-operator test suite, you will need some software installed in your machine:
-- A K8S/OpenShift/minikube cluster
+- A K8S/OpenShift/minikube cluster. By default, Minikube will be considered the platform being used, as it is the recommended platform for upstream tests.
 - kubectl/oc
 - helm (for DAST test execution)
 - podman (for Malware Detection test execution)
