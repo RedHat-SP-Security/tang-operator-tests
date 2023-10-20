@@ -1,5 +1,5 @@
 # tang-operator test suite
-Upstream repository for tang-operator-tests. Based on the previous work developed on common repository:
+Upstream repository for tang-operator test suite. Based on the previous work developed on common repository:
 https://github.com/RedHat-SP-Security/tests
 
 This test suite is supposed to be executed and maintained via Test Managament Tool (`tmt`).
