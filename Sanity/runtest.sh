@@ -83,7 +83,7 @@ dumpVerbose() {
 commandVerbose() {
     if [ "${V}" == "1" ] || [ "${VERBOSE}" == "1" ];
     then
-        "$@"
+        $*
     fi
 }
 
