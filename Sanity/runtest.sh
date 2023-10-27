@@ -66,6 +66,7 @@ DELETE_TMP_DIR="YES"
 test -z "${VERSION}" && VERSION="latest"
 test -z "${DISABLE_BUNDLE_INSTALL_TESTS}" && DISABLE_BUNDLE_INSTALL_TESTS="0"
 test -z "${DISABLE_BUNDLE_UNINSTALL_TESTS}" && DISABLE_BUNDLE_UNINSTALL_TESTS="0"
+test -z "${DISABLE_SECURITY_TESTS}" && DISABLE_SECURITY_TESTS="0"
 test -z "${IMAGE_VERSION}" && IMAGE_VERSION="quay.io/sec-eng-special/tang-operator-bundle:${VERSION}"
 test -n "${DOWNSTREAM_IMAGE_VERSION}" && {
     test -z "${OPERATOR_NAMESPACE}" && OPERATOR_NAMESPACE="openshift-operators"
@@ -1128,110 +1129,114 @@ rlJournalStart
     ############# DAST TESTS ##############
     ### Only execute DAST TESTS if helm command exists ...
     command -v helm >/dev/null && {
-        rlPhaseStartTest "Dynamic Application Security Testing"
-            # 1 - Log helm version
-            dumpVerbose "$(helm version)"
+        if [ "${DISABLE_SECURITY_TESTS}" != "1" ] ; then
+            rlPhaseStartTest "Dynamic Application Security Testing"
+                # 1 - Log helm version
+                dumpVerbose "$(helm version)"
 
-            # 2 - clone rapidast code (development branch)
-            pushd "${tmpdir}" && git clone https://github.com/RedHatProductSecurity/rapidast.git -b development || exit
+                # 2 - clone rapidast code (development branch)
+                pushd "${tmpdir}" && git clone https://github.com/RedHatProductSecurity/rapidast.git -b development || exit
 
-            # 3 - download configuration file template
-            # WARNING: if tang-operator is changed to OpenShift organization, change this
-            wget -O tang_operator.yaml https://raw.githubusercontent.com/latchset/tang-operator/main/tools/scan_tools/tang_operator_template.yaml
+                # 3 - download configuration file template
+                # WARNING: if tang-operator is changed to OpenShift organization, change this
+                wget -O tang_operator.yaml https://raw.githubusercontent.com/latchset/tang-operator/main/tools/scan_tools/tang_operator_template.yaml
 
-            # 4 - adapt configuration file template (token, machine)
-            if [ "${EXECUTION_MODE}" == "MINIKUBE" ];
-            then
-                API_HOST_PORT=$(minikube ip)
-                DEFAULT_TOKEN="TEST_TOKEN_UNREQUIRED_IN_MINIKUBE"
-            else
-                API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d  ' ')
-                DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" "$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}"\
-                                | grep ^tang-operator | grep service-account | awk '{print $1}')" -o json | jq -Mr '.data.token' | base64 -d)
-            fi
-            sed -i s@API_HOST_PORT_HERE@"${API_HOST_PORT}"@g tang_operator.yaml
-            sed -i s@AUTH_TOKEN_HERE@"${DEFAULT_TOKEN}"@g tang_operator.yaml
-            sed -i s@OPERATOR_NAMESPACE_HERE@"${OPERATOR_NAMESPACE}"@g tang_operator.yaml
-            dumpVerbose "API_HOST_PORT:[${API_HOST_PORT}]"
-            dumpVerbose "DEFAULT_TOKEN:[${DEFAULT_TOKEN}]"
-            dumpVerbose "OPERATOR_NAMESPACE provided to DAST:[${OPERATOR_NAMESPACE}]"
-            rlAssertNotEquals "Checking token not empty" "${DEFAULT_TOKEN}" ""
-
-            # 5 - adapt helm
-            pushd rapidast || exit
-            sed -i s@"kubectl --kubeconfig=./kubeconfig "@"${OC_CLIENT} "@g helm/results.sh
-            sed -i s@"secContext: '{}'"@"secContext: '{\"privileged\": true}'"@ helm/chart/values.yaml
-            sed -i s@'tag: "latest"'@'tag: "2.3.0-rc1"'@g helm/chart/values.yaml
-
-            # 6 - run rapidast on adapted configuration file (via helm)
-            rlRun -c "helm install rapidast ./helm/chart/ --set-file rapidastConfig=${tmpdir}/tang_operator.yaml 2>/dev/null" 0 "Installing rapidast helm chart"
-            pod_name=$(getPodNameWithPrefix "rapidast" "default" 5 1)
-            rlRun "checkPodState Completed ${TO_DAST_POD_COMPLETED} default ${pod_name}" 0 "Checking POD ${pod_name} in Completed state [Timeout=${TO_DAST_POD_COMPLETED} secs.]"
-
-            # 7 - extract results
-            rlRun -c "bash ./helm/results.sh 2>/dev/null" 0 "Extracting DAST results"
-
-            # 8 - parse results (do not have to ensure no previous results exist, as this is a temporary directory)
-            # Check no alarm exist ...
-            report_dir=$(ls -1d "${tmpdir}"/rapidast/tangservers/DAST*tangservers/ | head -1 | sed -e 's@/$@@g')
-            dumpVerbose "REPORT DIR:${report_dir}"
-
-            rlAssertNotEquals "Checking report_dir not empty" "${report_dir}" ""
-
-            report_file="${report_dir}/zap/zap-report.json"
-            dumpVerbose "REPORT FILE:${report_file}"
-
-            if [ -n "${report_dir}" ] && [ -f "${report_file}" ];
-            then
-                alerts=$(jq '.site[0].alerts | length' < "${report_dir}/zap/zap-report.json" )
-                dumpVerbose "Alerts:${alerts}"
-                for ((alert=0; alert<alerts; alert++));
-                do
-                    risk_desc=$(jq ".site[0].alerts[${alert}].riskdesc" < "${report_dir}/zap/zap-report.json" | awk '{print $1}' | tr -d '"' | tr -d " ")
-                    rlLog "Alert[${alert}] -> Priority:[${risk_desc}]"
-                    rlAssertNotEquals "Checking alarm is not High Risk" "${risk_desc}" "High"
-                done
-                if [ "${alerts}" != "0" ];
+                # 4 - adapt configuration file template (token, machine)
+                if [ "${EXECUTION_MODE}" == "MINIKUBE" ];
                 then
-                    DELETE_TMP_DIR="NO"
-                    rlLogWarning "A total of [${alerts}] alerts were detected! Please, review ZAP report: ${report_dir}/zap/zap-report.json"
+                    API_HOST_PORT=$(minikube ip)
+                    DEFAULT_TOKEN="TEST_TOKEN_UNREQUIRED_IN_MINIKUBE"
                 else
-                    rlLog "No alerts detected"
+                    API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d  ' ')
+                    DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" "$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}"\
+                                    | grep ^tang-operator | grep service-account | awk '{print $1}')" -o json | jq -Mr '.data.token' | base64 -d)
                 fi
-            else
-                rlLogWarning "Report file:${report_dir}/zap/zap-report.json does not exist"
-                ### Keep tmp dir for investigation on what could go wrong
-                DELETE_TMP_DIR="NO"
-            fi
+                sed -i s@API_HOST_PORT_HERE@"${API_HOST_PORT}"@g tang_operator.yaml
+                sed -i s@AUTH_TOKEN_HERE@"${DEFAULT_TOKEN}"@g tang_operator.yaml
+                sed -i s@OPERATOR_NAMESPACE_HERE@"${OPERATOR_NAMESPACE}"@g tang_operator.yaml
+                dumpVerbose "API_HOST_PORT:[${API_HOST_PORT}]"
+                dumpVerbose "DEFAULT_TOKEN:[${DEFAULT_TOKEN}]"
+                dumpVerbose "OPERATOR_NAMESPACE provided to DAST:[${OPERATOR_NAMESPACE}]"
+                rlAssertNotEquals "Checking token not empty" "${DEFAULT_TOKEN}" ""
 
-            # 9 - clean helm installation
-            helm uninstall rapidast
+                # 5 - adapt helm
+                pushd rapidast || exit
+                sed -i s@"kubectl --kubeconfig=./kubeconfig "@"${OC_CLIENT} "@g helm/results.sh
+                sed -i s@"secContext: '{}'"@"secContext: '{\"privileged\": true}'"@ helm/chart/values.yaml
+                sed -i s@'tag: "latest"'@'tag: "2.3.0-rc1"'@g helm/chart/values.yaml
 
-            # 10 - return
-            popd || exit
-            popd || exit
+                # 6 - run rapidast on adapted configuration file (via helm)
+                rlRun -c "helm install rapidast ./helm/chart/ --set-file rapidastConfig=${tmpdir}/tang_operator.yaml 2>/dev/null" 0 "Installing rapidast helm chart"
+                pod_name=$(getPodNameWithPrefix "rapidast" "default" 5 1)
+                rlRun "checkPodState Completed ${TO_DAST_POD_COMPLETED} default ${pod_name}" 0 "Checking POD ${pod_name} in Completed state [Timeout=${TO_DAST_POD_COMPLETED} secs.]"
 
-        rlPhaseEnd
+                # 7 - extract results
+                rlRun -c "bash ./helm/results.sh 2>/dev/null" 0 "Extracting DAST results"
+
+                # 8 - parse results (do not have to ensure no previous results exist, as this is a temporary directory)
+                # Check no alarm exist ...
+                report_dir=$(ls -1d "${tmpdir}"/rapidast/tangservers/DAST*tangservers/ | head -1 | sed -e 's@/$@@g')
+                dumpVerbose "REPORT DIR:${report_dir}"
+
+                rlAssertNotEquals "Checking report_dir not empty" "${report_dir}" ""
+
+                report_file="${report_dir}/zap/zap-report.json"
+                dumpVerbose "REPORT FILE:${report_file}"
+
+                if [ -n "${report_dir}" ] && [ -f "${report_file}" ];
+                then
+                    alerts=$(jq '.site[0].alerts | length' < "${report_dir}/zap/zap-report.json" )
+                    dumpVerbose "Alerts:${alerts}"
+                    for ((alert=0; alert<alerts; alert++));
+                    do
+                        risk_desc=$(jq ".site[0].alerts[${alert}].riskdesc" < "${report_dir}/zap/zap-report.json" | awk '{print $1}' | tr -d '"' | tr -d " ")
+                        rlLog "Alert[${alert}] -> Priority:[${risk_desc}]"
+                        rlAssertNotEquals "Checking alarm is not High Risk" "${risk_desc}" "High"
+                    done
+                    if [ "${alerts}" != "0" ];
+                    then
+                        DELETE_TMP_DIR="NO"
+                        rlLogWarning "A total of [${alerts}] alerts were detected! Please, review ZAP report: ${report_dir}/zap/zap-report.json"
+                    else
+                        rlLog "No alerts detected"
+                    fi
+                else
+                    rlLogWarning "Report file:${report_dir}/zap/zap-report.json does not exist"
+                    ### Keep tmp dir for investigation on what could go wrong
+                    DELETE_TMP_DIR="NO"
+                fi
+
+                # 9 - clean helm installation
+                helm uninstall rapidast
+
+                # 10 - return
+                popd || exit
+                popd || exit
+
+            rlPhaseEnd
+        fi
     }
     ############# /DAST TESTS #############
 
     ############# MALWARE DETECTION TESTS ############
     ### Only execute if podman and clamscan commands exist ...
     command -v "${CONTAINER_MGR}" >/dev/null && command -v clamscan >/dev/null && {
-        rlPhaseStartTest "Malware Detection Testing"
-        installed_version=$(getVersion)
-        ### Bundle Image
-        analyzeVersion "${installed_version}"
-        ### Container Image
-        controller_name=$(getPodNameWithPrefix "tang-operator-controller" "${OPERATOR_NAMESPACE}" 1)
-        rlAssertNotEquals "Checking controller_name is not empty" "${controller_name}" ""
-        container_image=$("${OC_CLIENT}" -n "${OPERATOR_NAMESPACE}" describe pod "${controller_name}" | grep tang | grep "Image:" | awk -F "Image:" '{print $2}' | tr -d ' ')
-        rlAssertEquals "Checking container image could be parsed appropriately" "$?" "0"
-        rlAssertNotEquals "Checking container image is not empty" "${container_image}" ""
-        dumpVerbose "Container Image:[${container_image}]"
-        test -n "${container_image}" && analyzeVersion "${container_image}"
-        DELETE_TMP_DIR="NO"
-        rlPhaseEnd
+        if [ "${DISABLE_SECURITY_TESTS}" != "1" ] ; then
+            rlPhaseStartTest "Malware Detection Testing"
+            installed_version=$(getVersion)
+            ### Bundle Image
+            analyzeVersion "${installed_version}"
+            ### Container Image
+            controller_name=$(getPodNameWithPrefix "tang-operator-controller" "${OPERATOR_NAMESPACE}" 1)
+            rlAssertNotEquals "Checking controller_name is not empty" "${controller_name}" ""
+            container_image=$("${OC_CLIENT}" -n "${OPERATOR_NAMESPACE}" describe pod "${controller_name}" | grep tang | grep "Image:" | awk -F "Image:" '{print $2}' | tr -d ' ')
+            rlAssertEquals "Checking container image could be parsed appropriately" "$?" "0"
+            rlAssertNotEquals "Checking container image is not empty" "${container_image}" ""
+            dumpVerbose "Container Image:[${container_image}]"
+            test -n "${container_image}" && analyzeVersion "${container_image}"
+            DELETE_TMP_DIR="NO"
+            rlPhaseEnd
+        fi
     }
     ############# /MALWARE DETECTION TESTS ###########
 
