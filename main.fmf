@@ -1,3 +1,6 @@
 #contact: Patrik Koncity <pkoncity@redhat.com>
 
 framework: beakerlib
+require:
+  - type: file
+    pattern: /TestHelpers/.*

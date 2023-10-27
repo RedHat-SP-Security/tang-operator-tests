@@ -46,7 +46,14 @@ rlJournalStart
           rlRun "mv kubectl  /usr/local/bin/"
           rlRun "kubectl version --client -o json"
           rlRun "minikube start --force"
-          rlRun "operator-sdk --timeout ${OLM_INSTALL_TIMEOUT} olm install"
+          #not trying to install again with rerun
+          if command -v operator-sdk &>/dev/null && kubectl get catalogsource -n olm &>/dev/null; then
+            rlRun "echo 'OLM as already installed.'"
+          else
+            rlRun "echo 'Instaling OLM'"
+            rlRun "operator-sdk --timeout ${OLM_INSTALL_TIMEOUT} olm install"
+          fi
+          #not use function script due possible usage of this setup for other components
           rlRun "minikube status"
           rlRun "kubectl config view"
     rlPhaseEnd
