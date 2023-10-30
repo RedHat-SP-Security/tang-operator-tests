@@ -16,7 +16,17 @@ discover:
   how: fmf
   test:
    - /Setup/setup_local_cluster
+   - /Setup/creating_test_namespace
    - /Sanity
+   - /Setup/clean_cluster
+
+adjust:
+  - when: distro == rhel-9 or distro == centos-stream-9 
+    prepare+:
+      - how: shell
+        script:
+          - dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm https://dl.fedoraproject.org/pub/epel/epel-next-release-latest-9.noarch.rpm
+
 
 execute:
     how: tmt
