@@ -113,15 +113,12 @@ rlJournalStart
             done
             if [ "${alerts}" != "0" ];
             then
-                DELETE_TMP_DIR="NO"
                 rlLogWarning "A total of [${alerts}] alerts were detected! Please, review ZAP report: ${report_dir}/zap/zap-report.json"
             else
                 rlLog "No alerts detected"
             fi
         else
             rlLogWarning "Report file:${report_dir}/zap/zap-report.json does not exist"
-            ### Keep tmp dir for investigation on what could go wrong
-            DELETE_TMP_DIR="NO"
         fi
 
         # 9 - clean helm installation
