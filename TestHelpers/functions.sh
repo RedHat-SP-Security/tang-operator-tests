@@ -1,6 +1,32 @@
 #!/bin/bash
-
-### Variable
+## vim: dict+=/usr/share/beakerlib/dictionary.vim cpt=.,w,b,u,t,i,k
+## ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+##
+##   runtest.sh of /CoreOS/tang-operator/Sanity
+##   Description: Basic functionality tests of the tang operator
+##   Author: Patrik Koncity <pkoncity@redhat.com>
+##   Author: Sergio Arroutbi <sarroutb@redhat.com>
+##
+## ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+##
+##   Copyright (c) 2023 Red Hat, Inc.
+##
+##   This program is free software: you can redistribute it and/or
+##   modify it under the terms of the GNU General Public License as
+##   published by the Free Software Foundation, either version 2 of
+##   the License, or (at your option) any later version.
+##
+##   This program is distributed in the hope that it will be
+##   useful, but WITHOUT ANY WARRANTY; without even the implied
+##   warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+##   PURPOSE.  See the GNU General Public License for more details.
+##
+##   You should have received a copy of the GNU General Public License
+##   along with this program. If not, see http://www.gnu.org/licenses/.
+##
+## ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#
+### Global Test Variables
 TO_BUNDLE="15m"
 FUNCTION_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 TEST_NAMESPACE_PATH="${FUNCTION_DIR}/reg_test/all_test_namespace"
@@ -32,7 +58,6 @@ TO_SERVICE_UP=180 #seconds
 ADV_PATH="adv"
 OC_DEFAULT_CLIENT="kubectl"
 TOP_SECRET_WORDS="top secret"
-DELETE_TMP_DIR="YES"
 [ -n "$TANG_IMAGE" ] || TANG_IMAGE="registry.redhat.io/rhel9/tang"
 
 
