@@ -1,0 +1,32 @@
+summary: test plan for running in oc
+
+
+prepare:
+  - how: shell
+    script:
+     - systemctl disable --now dnf-makecache.service || true
+     - systemctl disable --now dnf-makecache.timer || true
+     - dnf makecache
+
+discover:
+  how: fmf
+  test:
+   - /Setup/creating_test_namespace
+   - /Sanity
+   - /Setup/clean_cluster
+
+adjust:
+  - when: distro == rhel-9 or distro == centos-stream-9 
+    prepare+:
+      - how: shell
+        script:
+          - dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm https://dl.fedoraproject.org/pub/epel/epel-next-release-latest-9.noarch.rpm
+  - when: OC is defined and OC == false
+    enabled: false
+    because: we want to run this plan only for downstream testing
+
+
+
+execute:
+    how: tmt
+

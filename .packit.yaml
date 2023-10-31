@@ -11,3 +11,4 @@ jobs:
         - tmt:
             context:
               target_PR_branch: main
+              OC: "false"
