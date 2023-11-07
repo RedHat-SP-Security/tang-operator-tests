@@ -96,10 +96,7 @@ PACKAGES=(git podman jq)
 echo -e "\nInstall packages required by the script functions when missing."
 rpm -q "${PACKAGES[@]}" || yum -y install "${PACKAGES[@]}"
 
-
-
 ### Functions
-
 dumpVerbose() {
     if [ "${V}" == "1" ] || [ "${VERBOSE}" == "1" ];
     then
@@ -217,6 +214,7 @@ checkPodState() {
     local iterations=$2
     local namespace=$3
     local podname=$4
+    local error_state=$5
     local counter
     counter=0
     while [ ${counter} -lt ${iterations} ];
@@ -225,6 +223,8 @@ checkPodState() {
       dumpVerbose "POD STATUS:${pod_status} EXPECTED:${expected} COUNTER:${counter}/${iterations}"
       if [ "${pod_status}" == "${expected}" ]; then
         return 0
+      elif [ "${pod_status}" == "${error_state}" ]; then
+        return 1
       fi
       counter=$((counter+1))
       sleep 1

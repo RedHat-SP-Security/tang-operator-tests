@@ -51,6 +51,7 @@ rlJournalStart
         fi
         ########## CHECK CONTROLLER RUNNING #########
         controller_name=$(getPodNameWithPrefix "tang-operator-controller" "${OPERATOR_NAMESPACE}" "${TO_POD_START}")
-        rlRun "checkPodState Running ${TO_POD_START} ${OPERATOR_NAMESPACE} ${controller_name}" 0 "Checking controller POD in Running [Timeout=${TO_POD_START} secs.]"
+        rlRun "checkPodState Running ${TO_POD_START} ${OPERATOR_NAMESPACE} ${controller_name} Error" 0 \
+              "Checking controller POD in Running [Timeout=${TO_POD_START} secs.] and not in Error state"
     rlPhaseEnd
 rlJournalEnd
