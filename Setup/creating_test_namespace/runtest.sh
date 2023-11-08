@@ -29,6 +29,8 @@
 # Include Beaker environment
 . /usr/share/beakerlib/beakerlib.sh || exit 1
 
+TIMEOUT_CONTROLLER_KEEPS_RUNNING=10
+
 rlJournalStart
     rlPhaseStartSetup
         rlRun ". ../../TestHelpers/functions.sh" || rlDie "cannot import function script"
@@ -53,5 +55,7 @@ rlJournalStart
         controller_name=$(getPodNameWithPrefix "tang-operator-controller" "${OPERATOR_NAMESPACE}" "${TO_POD_START}")
         rlRun "checkPodState Running ${TO_POD_START} ${OPERATOR_NAMESPACE} ${controller_name} Error" 0 \
               "Checking controller POD in Running [Timeout=${TO_POD_START} secs.] and not in Error state"
+        rlRun "checkPodStateAndContinues Running ${TIMEOUT_CONTROLLER_KEEPS_RUNNING} ${OPERATOR_NAMESPACE} ${controller_name}" 0 \
+              "Checking controller POD continues Running [${TIMEOUT_CONTROLLER_KEEPS_RUNNING} secs.]"
     rlPhaseEnd
 rlJournalEnd
