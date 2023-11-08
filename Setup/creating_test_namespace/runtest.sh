@@ -51,7 +51,10 @@ rlJournalStart
         if [ -n "$TANG_IMAGE" ]; then
             useUpstreamImages
         fi
-        ########## CHECK CONTROLLER RUNNING #########
+    rlPhaseEnd
+
+    rlPhaseStartTest "Controller runs appropriately"
+        ########## CHECK CONTROLLER RUNS WITH NO ERRORS #########
         controller_name=$(getPodNameWithPrefix "tang-operator-controller" "${OPERATOR_NAMESPACE}" "${TO_POD_START}")
         rlRun "checkPodState Running ${TO_POD_START} ${OPERATOR_NAMESPACE} ${controller_name} Error" 0 \
               "Checking controller POD in Running [Timeout=${TO_POD_START} secs.] and not in Error state"
