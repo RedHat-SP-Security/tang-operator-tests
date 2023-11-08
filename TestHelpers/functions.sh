@@ -606,7 +606,12 @@ installDownstreamVersion() {
     pushd tang-operator/tools/index_tools
     local downstream_version=$(echo ${DOWNSTREAM_IMAGE_VERSION} | awk -F ':' '{print $2}')
     dumpVerbose "Installing Downstream version: ${DOWNSTREAM_IMAGE_VERSION} DOWNSTREAM_VERSION:[${downstream_version}]"
-    rlLog "Indexing and installing catalog"
+    if [ "${V}" == "1" ] || [ "${VERBOSE}" == "1" ];
+    then
+        rlLog "Indexing and installing catalog"
+    else
+        rlLog "Indexing and installing catalog: Please, be patient, as this can last some minutes"
+    fi
     if [ "${V}" == "1" ] || [ "${VERBOSE}" == "1" ];
     then
         DO_NOT_LOGIN="1" ./tang_index.sh "${DOWNSTREAM_IMAGE_VERSION}" "${downstream_version}" || err=1
