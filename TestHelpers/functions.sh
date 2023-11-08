@@ -132,12 +132,6 @@ dumpInfo() {
     rlLog "vvvvvvvvv IP vvvvvvvvvv"
     ip a | grep 'inet '
     rlLog "^^^^^^^^^ IP ^^^^^^^^^^"
-    #rlLog "vvvvvvvvv IP TABLES vvvvvvvvvv"
-    #sudo iptables -L
-    #rlLog "Flushing iptables"
-    #sudo iptables -F
-    #sudo iptables -L
-    #rlLog "^^^^^^^^^ IP TABLES ^^^^^^^^^^"
 }
 
 minikubeInfo() {
@@ -231,6 +225,27 @@ checkPodState() {
     done
     return 1
 }
+
+checkPodStateAndContinues() {
+    local expected=$1
+    local iterations=$2
+    local namespace=$3
+    local podname=$4
+    local counter
+    counter=0
+    while [ ${counter} -lt ${iterations} ];
+    do
+      pod_status=$("${OC_CLIENT}" -n "${namespace}" get pod "${podname}" | grep -v "^NAME" | awk '{print $3}')
+      dumpVerbose "POD STATUS:${pod_status} EXPECTED:${expected} COUNTER:${counter}/${iterations}"
+      if [ "${pod_status}" != "${expected}" ]; then
+        return 1
+      fi
+      counter=$((counter+1))
+      sleep 1
+    done
+    return 0
+}
+
 
 checkServiceAmount() {
     local expected=$1
