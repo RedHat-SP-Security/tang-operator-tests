@@ -58,8 +58,8 @@ TO_SERVICE_UP=180 #seconds
 ADV_PATH="adv"
 OC_DEFAULT_CLIENT="kubectl"
 TOP_SECRET_WORDS="top secret"
+OPERATOR_REPOSITORY="https://github.com/latchset/tang-operator"
 [ -n "$TANG_IMAGE" ] || TANG_IMAGE="registry.redhat.io/rhel9/tang"
-
 
 test -z "${VERSION}" && VERSION="latest"
 test -z "${DISABLE_BUNDLE_INSTALL_TESTS}" && DISABLE_BUNDLE_INSTALL_TESTS="0"
@@ -70,6 +70,7 @@ test -n "${DOWNSTREAM_IMAGE_VERSION}" && {
 }
 test -z "${OPERATOR_NAMESPACE}" && OPERATOR_NAMESPACE="default"
 test -z "${CONTAINER_MGR}" && CONTAINER_MGR="podman"
+test -d "${TMPDIR}" || TMPDIR=$(mktemp -d)
 
 ### Required setup for script, installing required packages
 if [ -z "${TEST_OC_CLIENT}" ];
@@ -586,7 +587,10 @@ checkStatusReadyReplicas() {
 }
 
 uninstallDownstreamVersion() {
-    pushd ${tmpdir}/tang-operator/tools/index_tools
+    err=0
+    # We have to try in the latest TMPDIR with tang_uninstall_catalog.sh to use it
+    dir=$(dirname $(find /tmp/ -iname "tang_uninstall_catalog.sh" -printf "%T@ %Tc %p\n" 2>/dev/null | sort -n | tail -1 | awk '{print $NF}'))
+    pushd "${dir}" || return 1
     if [ "${V}" == "1" ] || [ "${VERBOSE}" == "1" ];
     then
         ./tang_uninstall_catalog.sh || err=1
@@ -594,14 +598,13 @@ uninstallDownstreamVersion() {
         ./tang_uninstall_catalog.sh 1>/dev/null 2>/dev/null || err=1
     fi
     popd || return 1
-    return $?
+    return "${err}"
 }
 
 installDownstreamVersion() {
     local err=0
     # Download required tools
-    pushd ${tmpdir}
-    # WARNING: if tang-operator is changed to OpenShift organization, change this
+    pushd ${TMPDIR}
     git clone https://github.com/latchset/tang-operator
     pushd tang-operator/tools/index_tools
     local downstream_version=$(echo ${DOWNSTREAM_IMAGE_VERSION} | awk -F ':' '{print $2}')
@@ -785,7 +788,6 @@ analyzeVersion() {
     dumpVerbose "DETECTING MALWARE ON VERSION:[${1}]"
     "${CONTAINER_MGR}" pull "${1}"
     user=$(whoami | tr -d ' ' | awk '{print $1}')
-    local tmpdir=$( mktemp -d )
     if [ "${user}" == "root" ]; then
         freshclam
         dir_mount=$(sh "$FUNCTION_DIR"/scripts/mount_image.sh -v "${1}" -c "${CONTAINER_MGR}")
@@ -797,12 +799,12 @@ analyzeVersion() {
     dumpVerbose "Analyzing directory:[${analyzed_dir}]"
     commandVerbose "tree ${analyzed_dir}"
     prefix=$(echo "${1}" | tr ':' '_' | awk -F "/" '{print $NF}')
-    rlRun "clamscan -o --recursive --infected ${analyzed_dir} --log ${tmpdir}/${prefix}_malware.log" 0 "Checking for malware, logfile:${tmpdir}/${prefix}_malware.log"
-    infected_files=$(grep -i "Infected Files:" "${tmpdir}/${prefix}_malware.log" | awk -F ":" '{print $2}' | tr -d ' ')
+    rlRun "clamscan -o --recursive --infected ${analyzed_dir} --log ${TMPDIR}/${prefix}_malware.log" 0 "Checking for malware, logfile:${TMPDIR}/${prefix}_malware.log"
+    infected_files=$(grep -i "Infected Files:" "${TMPDIR}/${prefix}_malware.log" | awk -F ":" '{print $2}' | tr -d ' ')
     rlAssertEquals "Checking no infected files" "${infected_files}" "0"
     if [ "${infected_files}" != "0" ]; then
         rlLogWarning "${infected_files} Infected Files Detected!"
-        rlLogWarning "Please, review Malware Detection log file: ${tmpdir}/${prefix}_malware.log"
+        rlLogWarning "Please, review Malware Detection log file: ${TMPDIR}/${prefix}_malware.log"
     fi
     if [ "${user}" == "root" ]; then
         sh "$FUNCTION_DIR"/scripts/umount_image.sh -v "${1}" -c "${CONTAINER_MGR}"

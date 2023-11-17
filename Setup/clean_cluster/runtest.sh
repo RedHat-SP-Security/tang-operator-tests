@@ -37,7 +37,7 @@ rlJournalStart
         dumpVerbose "Controller name:[${controller_name}]"
         if [ -n "${DOWNSTREAM_IMAGE_VERSION}" ] && [ "${DISABLE_BUNDLE_INSTALL_TESTS}" != "1" ];
         then
-            uninstallDownstreamVersion
+            rlRun "uninstallDownstreamVersion" 0 "Uninstalling downstream version"
         fi
         rlRun "bundleStop" 0 "Cleaning installed tang-operator"
         if [ "${DISABLE_BUNDLE_INSTALL_TESTS}" != "1" ] && [ "${DISABLE_BUNDLE_UNINSTALL_TESTS}" != "1" ];
