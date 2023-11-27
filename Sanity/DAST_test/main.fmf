@@ -11,7 +11,7 @@ require+:
   - git
   - wget
   - jq
-duration: 5m
+duration: 10m
 enabled: true
 tag:
   - NoRHEL6
