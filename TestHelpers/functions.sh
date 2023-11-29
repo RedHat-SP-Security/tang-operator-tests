@@ -780,7 +780,12 @@ getVersion() {
     then
         echo "${DOWNSTREAM_IMAGE_VERSION}"
     else
-        echo "${IMAGE_VERSION}"
+        if [ "${EXECUTION_MODE}" == "CLUSTER" ] && [ "${DISABLE_BUNDLE_INSTALL_TESTS}" == "1" ];
+        then
+            "${OC_CLIENT}" describe installplan -n "${OPERATOR_NAMESPACE}" | grep -i tang-operator-bundle | awk -F "Path:" '{print $2}' | tr -d ' '
+        else
+            echo "${IMAGE_VERSION}"
+        fi
     fi
 }
 
