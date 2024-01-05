@@ -31,10 +31,13 @@
 
 rlJournalStart
     rlPhaseStartCleanup
+        rlRun 'rlImport "common-cloud-orchestration/ocpop-lib"' || rlDie "cannot import ocpop lib"
         rlRun ". ../../TestHelpers/functions.sh" || rlDie "cannot import function script"
-        rlRun "checkClusterStatus" 0 "Checking cluster status"
-        controller_name=$(getPodNameWithPrefix "tang-operator-controller" "${OPERATOR_NAMESPACE}" 1)
-        dumpVerbose "Controller name:[${controller_name}]"
+        TO_POD_CONTROLLER_TERMINATE=180 #seconds (for controller to end must wait longer)
+
+        rlRun "ocpopCheckClusterStatus" 0 "Checking cluster status"
+        controller_name=$(ocpopCheckServiceAmount "tang-operator-controller" "${OPERATOR_NAMESPACE}" 1)
+        ocpopLogVerbose "Controller name:[${controller_name}]"
         if [ -n "${DOWNSTREAM_IMAGE_VERSION}" ] && [ "${DISABLE_BUNDLE_INSTALL_TESTS}" != "1" ];
         then
             rlRun "uninstallDownstreamVersion" 0 "Uninstalling downstream version"
@@ -43,7 +46,7 @@ rlJournalStart
         if [ "${DISABLE_BUNDLE_INSTALL_TESTS}" != "1" ] && [ "${DISABLE_BUNDLE_UNINSTALL_TESTS}" != "1" ];
         then
           test -z "${controller_name}" ||
-          rlRun "checkPodKilled ${controller_name} ${OPERATOR_NAMESPACE} ${TO_POD_CONTROLLER_TERMINATE}" 0 "Checking controller POD not available any more [Timeout=${TO_POD_CONTROLLER_TERMINATE} secs.]"
+          rlRun "ocpopCheckPodKilled ${controller_name} ${OPERATOR_NAMESPACE} ${TO_POD_CONTROLLER_TERMINATE}" 0 "Checking controller POD not available any more [Timeout=${TO_POD_CONTROLLER_TERMINATE} secs.]"
         fi
         rlRun "${OC_CLIENT} delete -f ${TEST_NAMESPACE_FILE}" 0 "Deleting test namespace:${TEST_NAMESPACE}"
     rlPhaseEnd

@@ -32,16 +32,19 @@
 rlJournalStart
     ############# LEGACY TESTS ############
     rlPhaseStartTest "Legacy Test"
+        rlRun 'rlImport "common-cloud-orchestration/ocpop-lib"' || rlDie "cannot import ocpop lib"
         rlRun ". ../../TestHelpers/functions.sh" || rlDie "cannot import function script"
-        rlRun "${OC_CLIENT} apply -f ${FUNCTION_DIR}/reg_test/legacy_test/" 0 "Creating legacy test"
-        rlRun "checkPodAmount 1 ${TO_POD_START} ${TEST_NAMESPACE}" 0 "Checking 1 POD is started [Timeout=${TO_POD_START} secs.]"
-        rlRun "checkServiceAmount 1 ${TO_SERVICE_START} ${TEST_NAMESPACE}" 0 "Checking 1 Service is running [Timeout=${TO_SERVICE_START} secs.]"
-        pod_name=$(getPodNameWithPrefix "tang" "${TEST_NAMESPACE}" 5)
+        TO_LEGACY_POD_RUNNING=120 #seconds
+
+        rlRun "${OC_CLIENT} apply -f ${TANG_FUNCTION_DIR}/reg_test/legacy_test/" 0 "Creating legacy test"
+        rlRun "ocpopCheckPodAmount 1 ${TO_POD_START} ${TEST_NAMESPACE}" 0 "Checking 1 POD is started [Timeout=${TO_POD_START} secs.]"
+        rlRun "ocpopCheckServiceAmount 1 ${TO_SERVICE_START} ${TEST_NAMESPACE}" 0 "Checking 1 Service is running [Timeout=${TO_SERVICE_START} secs.]"
+        pod_name=$(ocpopGetPodNameWithPartialName "tang" "${TEST_NAMESPACE}" 5)
         rlAssertNotEquals "Checking pod name not empty" "${pod_name}" ""
-        rlRun "checkPodState Running ${TO_LEGACY_POD_RUNNING} ${TEST_NAMESPACE} ${pod_name}" 0 "Checking POD in Running state [Timeout=${TO_LEGACY_POD_RUNNING} secs.]"
-        rlRun "${OC_CLIENT} delete -f ${FUNCTION_DIR}/reg_test/legacy_test/" 0 "Deleting legacy test"
-        rlRun "checkPodAmount 0 ${TO_POD_STOP} ${TEST_NAMESPACE}" 0 "Checking no PODs continue running [Timeout=${TO_POD_STOP} secs.]"
-        rlRun "checkServiceAmount 0 ${TO_SERVICE_STOP} ${TEST_NAMESPACE}" 0 "Checking no Services continue running [Timeout=${TO_SERVICE_STOP} secs.]"
+        rlRun "ocpopCheckPodState Running ${TO_LEGACY_POD_RUNNING} ${TEST_NAMESPACE} ${pod_name}" 0 "Checking POD in Running state [Timeout=${TO_LEGACY_POD_RUNNING} secs.]"
+        rlRun "${OC_CLIENT} delete -f ${TANG_FUNCTION_DIR}/reg_test/legacy_test/" 0 "Deleting legacy test"
+        rlRun "ocpopCheckPodAmount 0 ${TO_POD_STOP} ${TEST_NAMESPACE}" 0 "Checking no PODs continue running [Timeout=${TO_POD_STOP} secs.]"
+        rlRun "ocpopCheckServiceAmount 0 ${TO_SERVICE_STOP} ${TEST_NAMESPACE}" 0 "Checking no Services continue running [Timeout=${TO_SERVICE_STOP} secs.]"
     rlPhaseEnd
     ############# /LEGACY TESTS ###########
 rlJournalPrintText
