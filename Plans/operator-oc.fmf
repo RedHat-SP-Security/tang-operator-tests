@@ -1,5 +1,9 @@
 summary: test plan for running in oc
 
+environment:
+  TEST_OC_CLIENT: "oc"
+# Can be specified version of operator, by default is used latest
+  IMAGE_VERSION: "quay.io/sec-eng-special/tang-operator-bundle-container:latest"
 
 prepare:
   - how: shell
