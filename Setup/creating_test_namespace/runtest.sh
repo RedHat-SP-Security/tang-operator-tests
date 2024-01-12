@@ -61,5 +61,7 @@ rlJournalStart
               "Checking controller POD in Running [Timeout=${TO_POD_START} secs.] and not in Error state"
         rlRun "ocpopCheckPodStateAndContinues Running ${TIMEOUT_CONTROLLER_KEEPS_RUNNING} ${OPERATOR_NAMESPACE} ${controller_name}" 0 \
               "Checking controller POD continues Running [${TIMEOUT_CONTROLLER_KEEPS_RUNNING} secs.]"
+	#SECENGSP-5573 Issue
+	rlRun "ocpopCheckOperatorChannel tang-operator stable"
     rlPhaseEnd
 rlJournalEnd
