@@ -191,12 +191,13 @@ checkPodKilled() {
     while [ ${counter} -lt ${iterations} ];
     do
         if [ "${V}" == "1" ] || [ "${VERBOSE}" == "1" ]; then
-            "${OC_CLIENT}" -n "${namespace}" get pod "${pod_name}"
+            if ! "${OC_CLIENT}" -n "${namespace}" get pod "${pod_name}"; then
+                return 0
+            fi
         else
-            "${OC_CLIENT}" -n "${namespace}" get pod "${pod_name}" 2>/dev/null 1>/dev/null
-        fi
-        if [ $? -ne 0 ]; then
-            return 0
+            if ! "${OC_CLIENT}" -n "${namespace}" get pod "${pod_name}" 2>/dev/null 1>/dev/null; then
+                return 0
+            fi
         fi
         counter=$((counter+1))
         sleep 1
@@ -277,12 +278,13 @@ checkServiceUp() {
     while [ ${counter} -lt ${iterations} ];
     do
         if [ "${V}" == "1" ] || [ "${VERBOSE}" == "1" ]; then
-            wget -O /dev/null -o /dev/null --timeout=${TO_WGET_CONNECTION} ${http_service}
+            if wget -O /dev/null -o /dev/null --timeout="${TO_WGET_CONNECTION}" "${http_service}"; then
+                return 0
+            fi
         else
-            wget -O /dev/null -o /dev/null --timeout=${TO_WGET_CONNECTION} ${http_service} 2>/dev/null 1>/dev/null
-        fi
-        if [ $? -eq 0 ]; then
-            return 0
+            if wget -O /dev/null -o /dev/null --timeout="${TO_WGET_CONNECTION}" "${http_service}" 2>/dev/null 1>/dev/null; then
+                return 0
+            fi
         fi
         counter=$((counter+1))
         dumpVerbose "WAITING SERVICE:${http_service} UP, COUNTER:${counter}/${iterations}"
@@ -344,7 +346,7 @@ getPodNameWithPrefix() {
     while [ ${counter} -lt ${iterations} ];
     do
       local pod_line
-      pod_line=$("${OC_CLIENT}" -n "${namespace}" get pods | grep -v "^NAME" | grep "${prefix}" | tail -${tail_position} | head -1)
+      pod_line=$("${OC_CLIENT}" -n "${namespace}" get pods | grep -v "^NAME" | grep "${prefix}" | tail -"${tail_position}" | head -1)
       dumpVerbose "POD LINE:[${pod_line}] POD PREFIX:[${prefix}] COUNTER:[${counter}/${iterations}]"
       if [ "${pod_line}" != "" ]; then
           echo "${pod_line}" | awk '{print $1}'
@@ -369,7 +371,7 @@ getServiceNameWithPrefix() {
     while [ ${counter} -lt ${iterations} ];
     do
       local service_name
-      service_name=$("${OC_CLIENT}" -n "${namespace}" get services | grep -v "^NAME" | grep "${prefix}" | tail -${tail_position} | head -1)
+      service_name=$("${OC_CLIENT}" -n "${namespace}" get services | grep -v "^NAME" | grep "${prefix}" | tail -"${tail_position}" | head -1)
       dumpVerbose "SERVICE NAME:[${service_name}] COUNTER:[${counter}/${iterations}]"
       if [ "${service_name}" != "" ]; then
           dumpVerbose "FOUND SERVICE name:[$(echo ${service_name} | awk '{print $1}')] POD PREFIX:[${prefix}] COUNTER:[${counter}/${iterations}]"
@@ -589,7 +591,7 @@ checkStatusReadyReplicas() {
 uninstallDownstreamVersion() {
     err=0
     # We have to try in the latest TMPDIR with tang_uninstall_catalog.sh to use it
-    dir=$(dirname $(find /tmp/ -iname "tang_uninstall_catalog.sh" -printf "%T@ %Tc %p\n" 2>/dev/null | sort -n | tail -1 | awk '{print $NF}'))
+    dir=$(dirname "$(find /tmp/ -iname "tang_uninstall_catalog.sh" -printf "%T@ %Tc %p\n" 2>/dev/null | sort -n | tail -1 | awk '{print $NF}')")
     pushd "${dir}" || return 1
     if [ "${V}" == "1" ] || [ "${VERBOSE}" == "1" ];
     then
@@ -603,11 +605,12 @@ uninstallDownstreamVersion() {
 
 installDownstreamVersion() {
     local err=0
+    local downstream_version
     # Download required tools
-    pushd ${TMPDIR}
+    pushd "${TMPDIR}" || exit 1
     git clone https://github.com/latchset/tang-operator
-    pushd tang-operator/tools/index_tools
-    local downstream_version=$(echo ${DOWNSTREAM_IMAGE_VERSION} | awk -F ':' '{print $2}')
+    pushd tang-operator/tools/index_tools || exit 1
+    downstream_version=$(echo "${DOWNSTREAM_IMAGE_VERSION}" | awk -F ':' '{print $2}')
     dumpVerbose "Installing Downstream version: ${DOWNSTREAM_IMAGE_VERSION} DOWNSTREAM_VERSION:[${downstream_version}]"
     if [ "${V}" == "1" ] || [ "${VERBOSE}" == "1" ];
     then
@@ -656,13 +659,13 @@ bundleInitialStop() {
     fi
     if [ "${V}" == "1" ] || [ "${VERBOSE}" == "1" ];
     then
-        operator-sdk --verbose cleanup tang-operator --namespace ${OPERATOR_NAMESPACE}
+        if operator-sdk --verbose cleanup tang-operator --namespace "${OPERATOR_NAMESPACE}"; then
+            checkPodAmount 0 "${TO_ALL_POD_CONTROLLER_TERMINATE}" "${OPERATOR_NAMESPACE}"
+	fi
     else
-        operator-sdk cleanup tang-operator --namespace ${OPERATOR_NAMESPACE} 2>/dev/null
-    fi
-    if [ $? -eq 0 ];
-    then
-        checkPodAmount 0 ${TO_ALL_POD_CONTROLLER_TERMINATE} ${OPERATOR_NAMESPACE}
+        if operator-sdk cleanup tang-operator --namespace "${OPERATOR_NAMESPACE}" 2>/dev/null; then
+            checkPodAmount 0 "${TO_ALL_POD_CONTROLLER_TERMINATE}" "${OPERATOR_NAMESPACE}"
+        fi
     fi
     return 0
 }
@@ -681,13 +684,13 @@ bundleStop() {
     fi
     if [ "${V}" == "1" ] || [ "${VERBOSE}" == "1" ];
     then
-        operator-sdk cleanup tang-operator --namespace ${OPERATOR_NAMESPACE}
+        if operator-sdk cleanup tang-operator --namespace "${OPERATOR_NAMESPACE}"; then
+            checkPodAmount 0 "${TO_ALL_POD_CONTROLLER_TERMINATE}" "${OPERATOR_NAMESPACE}"
+	fi
     else
-        operator-sdk cleanup tang-operator --namespace ${OPERATOR_NAMESPACE} 2>/dev/null
-    fi
-    if [ $? -eq 0 ];
-    then
-        checkPodAmount 0 ${TO_ALL_POD_CONTROLLER_TERMINATE} ${OPERATOR_NAMESPACE}
+        if operator-sdk cleanup tang-operator --namespace "${OPERATOR_NAMESPACE}" 2>/dev/null; then
+            checkPodAmount 0 "${TO_ALL_POD_CONTROLLER_TERMINATE}" "${OPERATOR_NAMESPACE}"
+	fi
     fi
     return 0
 }
@@ -698,7 +701,7 @@ getPodCpuRequest() {
     dumpVerbose "Getting POD:[${pod_name}](Namespace:[${namespace}]) CPU Request ..."
     local cpu
     cpu=$("${OC_CLIENT}" -n "${namespace}" describe pod "${pod_name}" | grep -i Requests -A2 | grep 'cpu' | awk -F ":" '{print $2}' | tr -d ' ' | tr -d "[A-Z,a-z]")
-    dumpVerbose "CPU REQUEST COMMAND:["${OC_CLIENT}" -n "${namespace}" describe pod ${pod_name} | grep -i Requests -A2 | grep 'cpu' | awk -F ':' '{print $2}' | tr -d ' ' | tr -d \"[A-Z,a-z]\""
+    dumpVerbose "CPU REQUEST COMMAND:[${OC_CLIENT} -n ${namespace} describe pod ${pod_name} | grep -i Requests -A2 | grep 'cpu' | awk -F ':' '{print $2}' | tr -d ' ' | tr -d \"[A-Z,a-z]\""
     dumpVerbose "POD:[${pod_name}](Namespace:[${namespace}]) CPU Request:[${cpu}]"
     echo "${cpu}"
 }
@@ -730,7 +733,7 @@ getPodMemRequest() {
             mult=1
             ;;
     esac
-    dumpVerbose "MEM REQUEST COMMAND:["${OC_CLIENT}" -n "${namespace}" describe pod ${pod_name} | grep -i Requests -A2 | grep 'memory' | awk -F ':' '{print $2}' | tr -d ' '"
+    dumpVerbose "MEM REQUEST COMMAND:[${OC_CLIENT} -n ${namespace} describe pod ${pod_name} | grep -i Requests -A2 | grep 'memory' | awk -F ':' '{print $2}' | tr -d ' '"
     dumpVerbose "POD:[${pod_name}](Namespace:[${namespace}]) MEM Request With Unit:[${mem}] Unit:[${unit}] Mult:[${mult}]"
     local mem_no_unit
     mem_no_unit="${mem/${unit}/}"
@@ -820,8 +823,8 @@ analyzeVersion() {
 }
 
 useUpstreamImages(){
-    for yaml_file in `find ${FUNCTION_DIR}/reg_test \( -iname "*.yaml" -o -iname "*.sh" \) -type f -print`
+    for yaml_file in $(find "${FUNCTION_DIR}/reg_test" \( -iname "*.yaml" -o -iname "*.sh" \) -type f -print)
     do
-        sed -i "s~\"registry.redhat.io/rhel9/tang\"~\"${TANG_IMAGE}\"~g" $yaml_file
+        sed -i "s~\"registry.redhat.io/rhel9/tang\"~\"${TANG_IMAGE}\"~g" "${yaml_file}"
     done
 }
