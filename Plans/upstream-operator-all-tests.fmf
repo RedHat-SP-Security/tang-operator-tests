@@ -1,0 +1,38 @@
+summary: Plan with installation of upstream tang operator.
+
+
+prepare:
+  - how: shell
+    script:
+     - systemctl disable --now dnf-makecache.service || true
+     - systemctl disable --now dnf-makecache.timer || true
+     - dnf makecache
+
+environment:
+  TANG_IMAGE: "quay.io/sec-eng-special/fedora_tang_server"
+  UPSTREAM_TANG: "true"
+
+discover:
+  - name: Configure_test_system
+    how: fmf
+    url: https://github.com/RedHat-SP-Security/common-cloud-orchestration
+    ref: main
+    test:
+      - /Setup/setup_local_cluster
+  - name: Run_tests
+    how: fmf
+    test:
+      - /Setup/install_upstream_tang_operator
+      - /Setup/creating_test_namespace
+      - /Sanity
+      - /Setup/clean_cluster
+
+adjust:
+  - when: distro == rhel-9 or distro == centos-stream-9 
+    prepare+:
+      - how: shell
+        script:
+          - dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm https://dl.fedoraproject.org/pub/epel/epel-next-release-latest-9.noarch.rpm
+
+execute:
+    how: tmt

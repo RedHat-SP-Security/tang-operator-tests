@@ -46,5 +46,10 @@ rlJournalStart
           rlRun "checkPodKilled ${controller_name} ${OPERATOR_NAMESPACE} ${TO_POD_CONTROLLER_TERMINATE}" 0 "Checking controller POD not available any more [Timeout=${TO_POD_CONTROLLER_TERMINATE} secs.]"
         fi
         rlRun "${OC_CLIENT} delete -f ${TEST_NAMESPACE_FILE}" 0 "Deleting test namespace:${TEST_NAMESPACE}"
+
+        if [ "${UPSTREAM_TANG}" == "true" ]; then
+            rlLog "Stop running registry container."
+            rlRun "podman rm --force -t 2 registry"
+        fi
     rlPhaseEnd
 rlJournalEnd
