@@ -44,6 +44,9 @@ TO_POD_STOP=5 #seconds
 TO_SERVICE_START=120 #seconds
 TO_SERVICE_STOP=120 #seconds
 
+if [ -d /etc/profile.d/upstream_tang_init.sh ]; then
+    sh /etc/profile.d/upstream_tang_init.sh
+fi
 
 TO_ALL_POD_CONTROLLER_TERMINATE=120 #seconds
 TO_KEY_ROTATION=1 #seconds
