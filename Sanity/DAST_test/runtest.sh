@@ -32,7 +32,9 @@
 
 rlJournalStart
     rlPhaseStartSetup
+        rlRun 'rlImport "common-cloud-orchestration/ocpop-lib"' || rlDie "cannot import ocpop lib"
         rlRun ". ../../TestHelpers/functions.sh" || rlDie "cannot import function script"
+        TO_DAST_POD_COMPLETED=240 #seconds (DAST lasts around 120 seconds)
         if ! command -v helm &> /dev/null; then
             ARCH=$(case $(uname -m) in x86_64) echo -n amd64 ;; aarch64) echo -n arm64 ;; *) echo -n "$(uname -m)" ;; esac)
             OS=$(uname | awk '{print tolower($0)}')
@@ -49,7 +51,7 @@ rlJournalStart
     ############# DAST TESTS ##############
     rlPhaseStartTest "Dynamic Application Security Testing"
         # 1 - Log helm version
-        dumpVerbose "$(helm version)"
+        ocpopLogVerbose "$(helm version)"
 
         # 2 - clone rapidast code (development branch)
         tmpdir=$(mktemp -d)
@@ -72,9 +74,9 @@ rlJournalStart
         sed -i s@API_HOST_PORT_HERE@"${API_HOST_PORT}"@g tang_operator.yaml
         sed -i s@AUTH_TOKEN_HERE@"${DEFAULT_TOKEN}"@g tang_operator.yaml
         sed -i s@OPERATOR_NAMESPACE_HERE@"${OPERATOR_NAMESPACE}"@g tang_operator.yaml
-        dumpVerbose "API_HOST_PORT:[${API_HOST_PORT}]"
-        dumpVerbose "DEFAULT_TOKEN:[${DEFAULT_TOKEN}]"
-        dumpVerbose "OPERATOR_NAMESPACE provided to DAST:[${OPERATOR_NAMESPACE}]"
+        ocpopLogVerbose "API_HOST_PORT:[${API_HOST_PORT}]"
+        ocpopLogVerbose "DEFAULT_TOKEN:[${DEFAULT_TOKEN}]"
+        ocpopLogVerbose "OPERATOR_NAMESPACE provided to DAST:[${OPERATOR_NAMESPACE}]"
         rlAssertNotEquals "Checking token not empty" "${DEFAULT_TOKEN}" ""
 
         # 5 - adapt helm
@@ -85,8 +87,8 @@ rlJournalStart
 
         # 6 - run rapidast on adapted configuration file (via helm)
         rlRun -c "helm install rapidast ./helm/chart/ --set-file rapidastConfig=${tmpdir}/tang_operator.yaml 2>/dev/null" 0 "Installing rapidast helm chart"
-        pod_name=$(getPodNameWithPrefix "rapidast" "default" 5 1)
-        rlRun "checkPodState Completed ${TO_DAST_POD_COMPLETED} default ${pod_name}" 0 "Checking POD ${pod_name} in Completed state [Timeout=${TO_DAST_POD_COMPLETED} secs.]"
+        pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "default" 5 1)
+        rlRun "ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} default ${pod_name}" 0 "Checking POD ${pod_name} in Completed state [Timeout=${TO_DAST_POD_COMPLETED} secs.]"
 
         # 7 - extract results
         rlRun -c "bash ./helm/results.sh 2>/dev/null" 0 "Extracting DAST results"
@@ -94,17 +96,17 @@ rlJournalStart
         # 8 - parse results (do not have to ensure no previous results exist, as this is a temporary directory)
         # Check no alarm exist ...
         report_dir=$(ls -1d "${tmpdir}"/rapidast/tangservers/DAST*tangservers/ | head -1 | sed -e 's@/$@@g')
-        dumpVerbose "REPORT DIR:${report_dir}"
+        ocpopLogVerbose "REPORT DIR:${report_dir}"
 
         rlAssertNotEquals "Checking report_dir not empty" "${report_dir}" ""
 
         report_file="${report_dir}/zap/zap-report.json"
-        dumpVerbose "REPORT FILE:${report_file}"
+        ocpopLogVerbose "REPORT FILE:${report_file}"
 
         if [ -n "${report_dir}" ] && [ -f "${report_file}" ];
         then
             alerts=$(jq '.site[0].alerts | length' < "${report_dir}/zap/zap-report.json" )
-            dumpVerbose "Alerts:${alerts}"
+            ocpopLogVerbose "Alerts:${alerts}"
             for ((alert=0; alert<alerts; alert++));
             do
                 risk_desc=$(jq ".site[0].alerts[${alert}].riskdesc" < "${report_dir}/zap/zap-report.json" | awk '{print $1}' | tr -d '"' | tr -d " ")

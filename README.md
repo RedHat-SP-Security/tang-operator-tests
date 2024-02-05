@@ -16,7 +16,7 @@ In order to execute tang-operator test suite, you will need some software instal
 - podman (for Malware Detection test execution)
 - clamav (for Malware Detection test execution)
 
-In case `helm`, `podman` or `clamav` does not exist, tests requiring its installation won't be executed.
+In case `helm`, `podman` or `clamav` does not exist, tests requiring its installation won't be executed. When is used Test Managament Tool (`tmt`) no requirements are needed.
 
 To execute the test suite, next steps must be followed:
 
@@ -49,4 +49,41 @@ $ DISABLE_BUNDLE_UNINSTALL_TESTS=1 make
 In case it is necessary, a more verbose output of the test execution can be indicated, through `V=1` option:
 ```bash
 $ V=1 make
+```
+Execute Test suite (through tmt command):
+
+To execute the test suite, next steps must be followed:
+
+Need to install tmt:
+
+```bash
+# dnf install -y tmt tmt-all
+```
+
+Clone Security Special Projects Test repository:
+```bash
+$ git clone https://github.com/RedHat-SP-Security/tang-operator-tests
+```
+
+1. Executing tests on minikube cluster ( setup of minikube is provided in test ).
+
+Execute localy via tmt:
+```bash
+# tmt -c distro=fedora-39 run plan --name packit-ci -vvv prepare discover provision -h local execute
+```
+
+Or running in virtual system via tmt:
+
+```bash
+# tmt -c distro=fedora-39 run plan --name packit-ci -vvv prepare discover provision -h virtual -i Fedora-39 -c system execute report finish
+```
+2. Executing test on OpenShift or Openshift-local(CRC).
+
+To execute the test suite, next steps must be followed:
+
+Have OpenShift cluster and be connected via oc cli.
+
+Execute localy via tmt:
+```bash
+# tmt -c distro=fedora-39 run plan --name operator-oc -vvv prepare discover provision -h local execute
 ```

@@ -33,15 +33,16 @@ TIMEOUT_CONTROLLER_KEEPS_RUNNING=10
 
 rlJournalStart
     rlPhaseStartSetup
+        rlRun 'rlImport "common-cloud-orchestration/ocpop-lib"' || rlDie "cannot import ocpop lib"
         rlRun ". ../../TestHelpers/functions.sh" || rlDie "cannot import function script"
         dumpDate
         dumpInfo
         rlLog "Creating tmp directory"
         tmpdir=$(mktemp -d)
         rlAssertNotEquals "Checking temporary directory name not empty" "${tmpdir}" ""
-        rlRun "dumpOpenShiftClientStatus" 0 "Checking OpenshiftClient installation"
+        rlRun "ocpopDumpOpenShiftClientStatus" 0 "Checking OpenshiftClient installation"
         rlRun "operator-sdk version > /dev/null" 0 "Checking operator-sdk installation"
-        rlRun "checkClusterStatus" 0 "Checking cluster status"
+        rlRun "ocpopCheckClusterStatus" 0 "Checking cluster status"
         # In case previous execution was abruptelly stopped:
         rlRun "bundleInitialStop" 0 "Cleaning already installed tang-operator (if any)"
         rlRun "bundleStart" 0 "Installing tang-operator-bundle version:${VERSION}"
@@ -55,10 +56,10 @@ rlJournalStart
 
     rlPhaseStartTest "Controller runs appropriately"
         ########## CHECK CONTROLLER RUNS WITH NO ERRORS #########
-        controller_name=$(getPodNameWithPrefix "tang-operator-controller" "${OPERATOR_NAMESPACE}" "${TO_POD_START}")
-        rlRun "checkPodState Running ${TO_POD_START} ${OPERATOR_NAMESPACE} ${controller_name} Error" 0 \
+        controller_name=$(ocpopGetPodNameWithPartialName "tang-operator-controller" "${OPERATOR_NAMESPACE}" "${TO_POD_START}")
+        rlRun "ocpopCheckPodState Running ${TO_POD_START} ${OPERATOR_NAMESPACE} ${controller_name} Error" 0 \
               "Checking controller POD in Running [Timeout=${TO_POD_START} secs.] and not in Error state"
-        rlRun "checkPodStateAndContinues Running ${TIMEOUT_CONTROLLER_KEEPS_RUNNING} ${OPERATOR_NAMESPACE} ${controller_name}" 0 \
+        rlRun "ocpopCheckPodStateAndContinues Running ${TIMEOUT_CONTROLLER_KEEPS_RUNNING} ${OPERATOR_NAMESPACE} ${controller_name}" 0 \
               "Checking controller POD continues Running [${TIMEOUT_CONTROLLER_KEEPS_RUNNING} secs.]"
     rlPhaseEnd
 rlJournalEnd
