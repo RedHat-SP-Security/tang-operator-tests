@@ -1,8 +1,7 @@
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #
-#   Makefile of /CoreOS/tang/Sanity
-#   Description: Deployment and basic functionality of the tang operator
-#   Author: Patrik Koncity <pkoncity@redhat.com>
+#   Makefile of /CoreOS/attestation-operator/Setup/prepare_library
+#   Description: Clone common cloud orchestration library repository
 #   Author: Sergio Arroutbi <sarroutb@redhat.com>
 #
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -23,21 +22,11 @@
 #   along with this program. If not, see http://www.gnu.org/licenses/.
 #
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-COMMON_REPOSITORY_CLONE_DIR?=$(shell pwd)
+COMMON_REPOSITORY:=$(shell sh -c "grep url $(COMMON_REPOSITORY_CLONE_DIR)/main.fmf | grep common | \
+                     sed -e s@' \- url: '@@g" | tr -d ' ')
+COMMON_REPOSITORY_DIR=$(shell echo "$(COMMON_REPOSITORY)" | awk -F '/' '{print $$NF}')
 
-.PHONY: prepare-library setup sanity clean
+.PHONY: clone
 
-all: prepare-library setup sanity clean
-
-prepare-library:
-	@COMMON_REPOSITORY_CLONE_DIR=$(COMMON_REPOSITORY_CLONE_DIR) $(MAKE) -C Setup/prepare_library
-
-setup:
-	$(MAKE) -C Setup/creating_test_namespace
-
-sanity:
-	$(MAKE) -C Sanity
-
-clean:
-	$(MAKE) -C Setup/clean_cluster
-
+clone:
+	test -d $(COMMON_REPOSITORY_CLONE_DIR)/$(COMMON_REPOSITORY_DIR) || git clone $(COMMON_REPOSITORY) $(COMMON_REPOSITORY_CLONE_DIR)/$(COMMON_REPOSITORY_DIR)
