@@ -59,6 +59,8 @@ rlJournalStart
         rlRun "ocpopCheckPodStateAndContinues Running ${TIMEOUT_CONTROLLER_KEEPS_RUNNING} ${OPERATOR_NAMESPACE} ${controller_name}" 0 \
               "Checking controller POD continues Running [${TIMEOUT_CONTROLLER_KEEPS_RUNNING} secs.]"
 	#SECENGSP-5573 Issue
-	rlRun "ocpopCheckOperatorChannel tang-operator stable"
+        if [ "${DOWNSTREAM_OPERATOR_DEPLOYMENT_CLI}" == "true" ]; then
+            rlRun "ocpopCheckOperatorChannel tang-operator stable"
+        fi
     rlPhaseEnd
 rlJournalEnd
