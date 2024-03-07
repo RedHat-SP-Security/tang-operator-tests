@@ -10,5 +10,5 @@ tag:
 require+:
   - libvirt-daemon
   - podman
-duration: 5m
+duration: 15m
 enabled: true
