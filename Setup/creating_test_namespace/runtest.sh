@@ -35,11 +35,8 @@ rlJournalStart
     rlPhaseStartSetup
         rlRun 'rlImport "common-cloud-orchestration/ocpop-lib"' || rlDie "cannot import ocpop lib"
         rlRun ". ../../TestHelpers/functions.sh" || rlDie "cannot import function script"
-        dumpDate
-        dumpInfo
-        rlLog "Creating tmp directory"
-        tmpdir=$(mktemp -d)
-        rlAssertNotEquals "Checking temporary directory name not empty" "${tmpdir}" ""
+        ocpopDumpDate
+        ocpopDumpInfo
         rlRun "ocpopDumpOpenShiftClientStatus" 0 "Checking OpenshiftClient installation"
         rlRun "operator-sdk version > /dev/null" 0 "Checking operator-sdk installation"
         rlRun "ocpopCheckClusterStatus" 0 "Checking cluster status"
