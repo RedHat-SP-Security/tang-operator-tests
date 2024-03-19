@@ -36,7 +36,7 @@ rlJournalStart
         TO_POD_CONTROLLER_TERMINATE=180 #seconds (for controller to end must wait longer)
 
         rlRun "ocpopCheckClusterStatus" 0 "Checking cluster status"
-        controller_name=$(ocpopCheckServiceAmount "tang-operator-controller" "${OPERATOR_NAMESPACE}" 1)
+        controller_name=$(ocpopGetPodNameWithPartialName "tang-operator-controller" "${OPERATOR_NAMESPACE}" 1)
         ocpopLogVerbose "Controller name:[${controller_name}]"
         if [ -n "${DOWNSTREAM_IMAGE_VERSION}" ] && [ "${DISABLE_BUNDLE_INSTALL_TESTS}" != "1" ];
         then
