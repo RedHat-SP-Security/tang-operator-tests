@@ -10,7 +10,9 @@ prepare:
 
 environment:
   TANG_IMAGE: "quay.io/sec-eng-special/fedora_tang_server"
-  UPSTREAM_TANG: "true"
+  UPSTREAM_OPERATOR: "true"
+  REPO_CLONE: "tang"
+  EXECUTION_MODE: "minikube"
 
 discover:
   - name: Configure_test_system
@@ -19,10 +21,10 @@ discover:
     ref: main
     test:
       - /Setup/setup_local_cluster
+      - /Setup/install_upstream_operator
   - name: Run_tests
     how: fmf
     test:
-      - /Setup/install_upstream_tang-operator
       - /Setup/creating_test_namespace
       - /Sanity
       - /Setup/clean_cluster

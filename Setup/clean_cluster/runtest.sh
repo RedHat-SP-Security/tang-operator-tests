@@ -50,7 +50,7 @@ rlJournalStart
         fi
         rlRun "${OC_CLIENT} delete -f ${TEST_NAMESPACE_FILE}" 0 "Deleting test namespace:${TEST_NAMESPACE}"
 
-        if [ "${UPSTREAM_TANG}" == "true" ]; then
+        if [ "${UPSTREAM_OPERATOR}" == "true" ]; then
             rlLog "Stop running registry container."
             rlRun "podman rm --force -t 2 registry"
         fi
