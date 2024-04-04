@@ -120,6 +120,22 @@ rlJournalStart
         rlRun "ocpopCheckPodAmount 0 ${TO_POD_STOP} ${TEST_NAMESPACE}" 0 "Checking no PODs continue running [Timeout=${TO_POD_STOP} secs.]"
         rlRun "ocpopCheckServiceAmount 0 ${TO_SERVICE_STOP} ${TEST_NAMESPACE}" 0 "Checking no Services continue running [Timeout=${TO_SERVICE_STOP} secs.]"
     rlPhaseEnd
+
+    rlPhaseStartTest "Unique deployment functional test (ClusterIP none)"
+        rlRun "${OC_CLIENT} apply -f ${TANG_FUNCTION_DIR}/reg_test/func_test/none_cluster_ip/" 0 "Creating unique deployment with None ClusterIP"
+        rlRun "ocpopCheckPodAmount 1 ${TO_POD_START} ${TEST_NAMESPACE}" 0 "Checking 1 POD is started [Timeout=${TO_POD_START} secs.]"
+        pod_name=$(ocpopGetPodNameWithPartialName "tang" "${TEST_NAMESPACE}" 5 1)
+        rlAssertNotEquals "Checking pod name not empty" "${pod_name}" ""
+        rlRun "ocpopCheckPodState Running ${TO_POD_START} ${TEST_NAMESPACE} ${pod_name}" 0 "Checking POD in Running state [Timeout=${TO_POD_START} secs.]"
+        rlRun "ocpopCheckServiceAmount 1 ${TO_SERVICE_START} ${TEST_NAMESPACE}" 0 "Checking 1 Service is started [Timeout=${TO_SERVICE_START} secs.]"
+        service_name=$(ocpopGetServiceNameWithPrefix "service" "${TEST_NAMESPACE}" 5 1)
+        service_ip=$(ocpopGetServiceClusterIp "${service_name}" "${TEST_NAMESPACE}" "${TO_EXTERNAL_IP}")
+        rlAssertEquals "Checking IP is None" "${service_ip}" "None"
+        rlRun "${OC_CLIENT} delete -f ${TANG_FUNCTION_DIR}/reg_test/func_test/none_cluster_ip/" 0 "Deleting unique deployment with None ClusterIP"
+        rlRun "ocpopCheckPodAmount 0 ${TO_POD_STOP} ${TEST_NAMESPACE}" 0 "Checking no PODs continue running [Timeout=${TO_POD_STOP} secs.]"
+        rlRun "ocpopCheckServiceAmount 0 ${TO_SERVICE_STOP} ${TEST_NAMESPACE}" 0 "Checking no Services continue running [Timeout=${TO_SERVICE_STOP} secs.]"
+    rlPhaseEnd
+
     ########### /FUNCTIONAL TESTS #########
 
 rlJournalPrintText
