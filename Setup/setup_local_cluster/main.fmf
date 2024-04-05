@@ -10,7 +10,7 @@ tag:
 require+:
   - libvirt-daemon
   - podman
-  - wget
+  - curl
 duration: 5m
 enabled: true
 

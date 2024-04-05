@@ -127,7 +127,7 @@ dumpKeyAdv() {
     local url
     url="http://${ip}:${port}/${ADV_PATH}"
     local get_command1
-    get_command1="wget ${url} --timeout=${TO_WGET_CONNECTION} -O ${file} -o /dev/null"
+    get_command1="curl ${url} --connect-timeout ${TO_WGET_CONNECTION} -o ${file} 1>/dev/null 2>/dev/null"
     ocpopLogVerbose "DUMP_KEY_ADV_COMMAND:[${get_command1}]"
     ${get_command1}
 }
