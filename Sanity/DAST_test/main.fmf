@@ -9,7 +9,7 @@ recommend:
   - helm
 require+:
   - git
-  - wget
+  - curl
   - jq
 duration: 10m
 enabled: true

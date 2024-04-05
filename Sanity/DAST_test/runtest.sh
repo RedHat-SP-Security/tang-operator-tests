@@ -59,7 +59,7 @@ rlJournalStart
 
         # 3 - download configuration file template
         # WARNING: if tang-operator is changed to OpenShift organization, change this
-        rlRun "wget -O tang_operator.yaml https://raw.githubusercontent.com/latchset/tang-operator/main/tools/scan_tools/tang_operator_template.yaml"
+        rlRun "curl -o tang_operator.yaml https://raw.githubusercontent.com/latchset/tang-operator/main/tools/scan_tools/tang_operator_template.yaml"
 
         # 4 - adapt configuration file template (token, machine)
         if [ "${EXECUTION_MODE}" == "MINIKUBE" ];

@@ -27,11 +27,10 @@ rlJournalStart
           ARCH=$(case $(uname -m) in x86_64) echo -n amd64 ;; aarch64) echo -n arm64 ;; *) echo -n "$(uname -m)" ;; esac)
           OS=$(uname | awk '{print tolower($0)}')
           #download latest operator
-          curl -s https://api.github.com/repos/operator-framework/operator-sdk/releases/latest \
+          curl $(curl -s https://api.github.com/repos/operator-framework/operator-sdk/releases/latest \
 | grep "operator-sdk_${OS}_${ARCH}" \
 | cut -d : -f 2,3 \
-| tr -d \" \
-| wget -qi - 
+| tr -d '"') 2>/dev/null 1/dev/null
           rlRun "chmod +x operator-sdk_${OS}_${ARCH} && mv operator-sdk_${OS}_${ARCH} /usr/local/bin/operator-sdk"
 
           #setup of libvirt
