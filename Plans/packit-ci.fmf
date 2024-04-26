@@ -11,6 +11,7 @@ prepare:
 environment:
   TANG_IMAGE: "quay.io/sec-eng-special/fedora_tang_server"
   CI: "true"
+  EXECUTION_MODE: "MINIKUBE"
 
 discover:
   - name: Configure_test_system
