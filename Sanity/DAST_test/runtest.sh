@@ -34,7 +34,7 @@ rlJournalStart
     rlPhaseStartSetup
         rlRun 'rlImport "common-cloud-orchestration/ocpop-lib"' || rlDie "cannot import ocpop lib"
         rlRun ". ../../TestHelpers/functions.sh" || rlDie "cannot import function script"
-        TO_DAST_POD_COMPLETED=240 #seconds (DAST lasts around 120 seconds)
+        TO_DAST_POD_COMPLETED=300 #seconds (DAST lasts around 120 seconds)
         if ! command -v helm &> /dev/null; then
             ARCH=$(case $(uname -m) in x86_64) echo -n amd64 ;; aarch64) echo -n arm64 ;; *) echo -n "$(uname -m)" ;; esac)
             OS=$(uname | awk '{print tolower($0)}')
@@ -70,6 +70,11 @@ rlJournalStart
             API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d  ' ')
             DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" "$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}"\
                             | grep ^tang-operator | grep service-account | awk '{print $1}')" -o json | jq -Mr '.data.token' | base64 -d)
+	    test -z "${DEFAULT_TOKEN}" &&\
+		DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n  "${OPERATOR_NAMESPACE}" $("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}"\
+		            | grep ^tang-operator | awk '{print $1}') -o json | jq -M '.data | .[]' | tr -d '"')
+            echo "API_HOST_PORT=${API_HOST_PORT}"
+            echo "DEFAULT_TOKEN=${DEFAULT_TOKEN}"
         fi
         sed -i s@API_HOST_PORT_HERE@"${API_HOST_PORT}"@g tang_operator.yaml
         sed -i s@AUTH_TOKEN_HERE@"${DEFAULT_TOKEN}"@g tang_operator.yaml
@@ -83,7 +88,7 @@ rlJournalStart
         pushd rapidast || exit
         sed -i s@"kubectl --kubeconfig=./kubeconfig "@"${OC_CLIENT} "@g helm/results.sh
         sed -i s@"secContext: '{}'"@"secContext: '{\"privileged\": true}'"@ helm/chart/values.yaml
-        sed -i s@'tag: "latest"'@'tag: "2.5.0"'@g helm/chart/values.yaml
+        sed -i s@'tag: "latest"'@'tag: "2.6.0"'@g helm/chart/values.yaml
 
         # 6 - run rapidast on adapted configuration file (via helm)
         rlRun -c "helm install rapidast ./helm/chart/ --set-file rapidastConfig=${tmpdir}/tang_operator.yaml 2>/dev/null" 0 "Installing rapidast helm chart"
