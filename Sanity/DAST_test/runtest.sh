@@ -32,6 +32,11 @@
 
 rlJournalStart
     rlPhaseStartSetup
+        if [ "${EXECUTION_MODE}" != "MINIKUBE" ];
+        then
+            rlLog "DAST test only available for Minikube"
+            exit 0
+	fi
         rlRun 'rlImport "common-cloud-orchestration/ocpop-lib"' || rlDie "cannot import ocpop lib"
         rlRun ". ../../TestHelpers/functions.sh" || rlDie "cannot import function script"
         TO_DAST_POD_COMPLETED=300 #seconds (DAST lasts around 120 seconds)
@@ -62,20 +67,8 @@ rlJournalStart
         rlRun "curl -o tang_operator.yaml https://raw.githubusercontent.com/latchset/tang-operator/main/tools/scan_tools/tang_operator_template.yaml"
 
         # 4 - adapt configuration file template (token, machine)
-        if [ "${EXECUTION_MODE}" == "MINIKUBE" ];
-        then
-            API_HOST_PORT=$(minikube ip)
-            DEFAULT_TOKEN="TEST_TOKEN_UNREQUIRED_IN_MINIKUBE"
-        else
-            API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d  ' ')
-            DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" "$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}"\
-                            | grep ^tang-operator | grep service-account | awk '{print $1}')" -o json | jq -Mr '.data.token' | base64 -d)
-	    test -z "${DEFAULT_TOKEN}" &&\
-		DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n  "${OPERATOR_NAMESPACE}" $("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}"\
-		            | grep ^tang-operator | awk '{print $1}') -o json | jq -M '.data | .[]' | tr -d '"')
-            echo "API_HOST_PORT=${API_HOST_PORT}"
-            echo "DEFAULT_TOKEN=${DEFAULT_TOKEN}"
-        fi
+        API_HOST_PORT=$(minikube ip)
+        DEFAULT_TOKEN="TEST_TOKEN_UNREQUIRED_IN_MINIKUBE"
         sed -i s@API_HOST_PORT_HERE@"${API_HOST_PORT}"@g tang_operator.yaml
         sed -i s@AUTH_TOKEN_HERE@"${DEFAULT_TOKEN}"@g tang_operator.yaml
         sed -i s@OPERATOR_NAMESPACE_HERE@"${OPERATOR_NAMESPACE}"@g tang_operator.yaml
