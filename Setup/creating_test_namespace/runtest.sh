@@ -45,6 +45,7 @@ rlJournalStart
         rlRun "bundleStart" 0 "Installing tang-operator-bundle version:${VERSION}"
         rlRun "${OC_CLIENT} apply -f ${TEST_NAMESPACE_FILE}" 0 "Creating test namespace:${TEST_NAMESPACE}"
         rlRun "${OC_CLIENT} get namespace ${TEST_NAMESPACE}" 0 "Checking test namespace:${TEST_NAMESPACE}"
+        bash
         #go through all the files and set substition for TANG_IMAGE keyword
         if [ -n "$TANG_IMAGE" ]; then
             useUpstreamImages
@@ -58,6 +59,7 @@ rlJournalStart
               "Checking controller POD in Running [Timeout=${TO_POD_START} secs.] and not in Error state"
         rlRun "ocpopCheckPodStateAndContinues Running ${TIMEOUT_CONTROLLER_KEEPS_RUNNING} ${OPERATOR_NAMESPACE} ${controller_name}" 0 \
               "Checking controller POD continues Running [${TIMEOUT_CONTROLLER_KEEPS_RUNNING} secs.]"
+        bash
 	#SECENGSP-5573 Issue
         if [ "${DOWNSTREAM_OPERATOR_DEPLOYMENT_CLI}" == "true" ]; then
             rlRun "ocpopCheckOperatorChannel tang-operator stable"
