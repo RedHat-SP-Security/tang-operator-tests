@@ -37,11 +37,15 @@ rlJournalStart
         rlRun ". ../../TestHelpers/functions.sh" || rlDie "cannot import function script"
         ocpopDumpDate
         ocpopDumpInfo
+        if [ -z "${OPERATOR_NAME}" ];
+        then
+            OPERATOR_NAME=tang-operator
+        fi
         rlRun "ocpopDumpOpenShiftClientStatus" 0 "Checking OpenshiftClient installation"
         rlRun "operator-sdk version > /dev/null" 0 "Checking operator-sdk installation"
         rlRun "ocpopCheckClusterStatus" 0 "Checking cluster status"
         # In case previous execution was abruptelly stopped:
-        rlRun "bundleInitialStop" 0 "Cleaning already installed tang-operator (if any)"
+        rlRun "ocpopBundleInitialStop" 0 "Cleaning already installed operator (if any)"
         rlRun "bundleStart" 0 "Installing tang-operator-bundle version:${VERSION}"
         rlRun "${OC_CLIENT} apply -f ${TEST_NAMESPACE_FILE}" 0 "Creating test namespace:${TEST_NAMESPACE}"
         rlRun "${OC_CLIENT} get namespace ${TEST_NAMESPACE}" 0 "Checking test namespace:${TEST_NAMESPACE}"
@@ -53,7 +57,7 @@ rlJournalStart
 
     rlPhaseStartTest "Controller runs appropriately"
         ########## CHECK CONTROLLER RUNS WITH NO ERRORS #########
-        controller_name=$(ocpopGetPodNameWithPartialName "tang-operator-controller" "${OPERATOR_NAMESPACE}" "${TO_POD_START}")
+        controller_name=$(ocpopGetPodNameWithPartialName "${OPERATOR_NAME}-controller" "${OPERATOR_NAMESPACE}" "${TO_POD_START}")
         rlRun "ocpopCheckPodState Running ${TO_POD_START} ${OPERATOR_NAMESPACE} ${controller_name} Error" 0 \
               "Checking controller POD in Running [Timeout=${TO_POD_START} secs.] and not in Error state"
         rlRun "ocpopCheckPodStateAndContinues Running ${TIMEOUT_CONTROLLER_KEEPS_RUNNING} ${OPERATOR_NAMESPACE} ${controller_name}" 0 \

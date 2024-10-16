@@ -9,5 +9,6 @@ roleRef:
   name: pod-reader-executor
 subjects:
   - kind: ServiceAccount
-    name: tang-operator-controller-manager
+    name: <
+        {{OPERATOR_NAME}}-controller-manager
     namespace: {{OPERATOR_NAMESPACE}}

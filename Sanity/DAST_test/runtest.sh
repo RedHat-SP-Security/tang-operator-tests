@@ -69,10 +69,10 @@ rlJournalStart
         else
             API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d  ' ')
             DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" "$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}"\
-                            | grep ^tang-operator | grep service-account | awk '{print $1}')" -o json | jq -Mr '.data.token' | base64 -d)
+                            | grep ^${OPERATOR_NAMESPACE} | grep service-account | awk '{print $1}')" -o json | jq -Mr '.data.token' | base64 -d)
 	    test -z "${DEFAULT_TOKEN}" &&\
 		DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n  "${OPERATOR_NAMESPACE}" $("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}"\
-		            | grep ^tang-operator | awk '{print $1}') -o json | jq -M '.data | .[]' | tr -d '"')
+		            | grep ^${OPERATOR_NAMESPACE} | awk '{print $1}') -o json | jq -M '.data | .[]' | tr -d '"')
             echo "API_HOST_PORT=${API_HOST_PORT}"
             echo "DEFAULT_TOKEN=${DEFAULT_TOKEN}"
         fi
@@ -88,9 +88,10 @@ rlJournalStart
         pushd rapidast || exit
         sed -i s@"kubectl --kubeconfig=./kubeconfig "@"${OC_CLIENT} "@g helm/results.sh
         sed -i s@"secContext: '{}'"@"secContext: '{\"privileged\": true}'"@ helm/chart/values.yaml
-        sed -i s@'tag: "latest"'@'tag: "2.6.0"'@g helm/chart/values.yaml
+        sed -i s@'tag: "latest"'@'tag: "2.8.0"'@g helm/chart/values.yaml
 
         # 6 - run rapidast on adapted configuration file (via helm)
+        helm uninstall rapidast
         rlRun -c "helm install rapidast ./helm/chart/ --set-file rapidastConfig=${tmpdir}/tang_operator.yaml 2>/dev/null" 0 "Installing rapidast helm chart"
         pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "default" 5 1)
         rlRun "ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} default ${pod_name}" 0 "Checking POD ${pod_name} in Completed state [Timeout=${TO_DAST_POD_COMPLETED} secs.]"
