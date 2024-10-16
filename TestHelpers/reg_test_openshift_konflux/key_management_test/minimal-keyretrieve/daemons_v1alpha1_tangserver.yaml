@@ -1,0 +1,12 @@
+---
+apiVersion: nbde.openshift.io/v1alpha1
+kind: TangServer
+metadata:
+  name: tangserver-mini
+  namespace: nbde
+  finalizers:
+    - finalizer.nbde.tangserver.openshift.io
+spec:
+  image: "registry.redhat.io/rhel9/tang"
+  version: "latest"
+  replicas: 1

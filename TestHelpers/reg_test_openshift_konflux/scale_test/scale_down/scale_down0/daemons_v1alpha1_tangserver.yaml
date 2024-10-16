@@ -1,0 +1,18 @@
+---
+apiVersion: nbde.openshift.io/v1alpha1
+kind: TangServer
+metadata:
+  name: tangserver-scaledown
+  namespace: nbde
+  finalizers:
+    - finalizer.nbde.tangserver.openshift.io
+spec:
+  replicas: 1
+  image: "registry.redhat.io/rhel9/tang"
+  version: "latest"
+  resourcesRequest:
+    cpu: "40m"
+    memory: "40M"
+  resourcesLimit:
+    cpu: "50m"
+    memory: "50M"

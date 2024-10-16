@@ -1,0 +1,13 @@
+---
+apiVersion: nbde.openshift.io/v1alpha1
+kind: TangServer
+metadata:
+  name: tangserver-scaleout
+  namespace: nbde
+  finalizers:
+    - finalizer.nbde.tangserver.openshift.io
+spec:
+  # Add fields here
+  image: "registry.redhat.io/rhel9/tang"
+  version: "latest"
+  replicas: 2

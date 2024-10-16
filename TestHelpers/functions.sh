@@ -27,7 +27,6 @@
 ## ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #
 ### Global Test Variables
-TANG_FUNCTION_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 TO_BUNDLE="15m"
 TANG_FUNCTION_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 TEST_NAMESPACE_PATH="${TANG_FUNCTION_DIR}/reg_test/all_test_namespace"
@@ -52,9 +51,13 @@ TO_ALL_POD_CONTROLLER_TERMINATE=120 #seconds
 TO_KEY_ROTATION=1 #seconds
 [ -n "$TANG_IMAGE" ] || TANG_IMAGE="registry.redhat.io/rhel9/tang"
 
+if [ -z "${OPERATOR_NAME}" ];
+then
+    OPERATOR_NAME=tang-operator
+fi
 test -z "${DISABLE_BUNDLE_INSTALL_TESTS}" && DISABLE_BUNDLE_INSTALL_TESTS="0"
 test -z "${DISABLE_BUNDLE_UNINSTALL_TESTS}" && DISABLE_BUNDLE_UNINSTALL_TESTS="0"
-test -z "${IMAGE_VERSION}" && IMAGE_VERSION="quay.io/sec-eng-special/tang-operator-bundle:${VERSION}"
+test -z "${IMAGE_VERSION}" && IMAGE_VERSION="quay.io/sec-eng-special/${OPERATOR_NAME}-bundle:${VERSION}"
 test -z "${CONTAINER_MGR}" && CONTAINER_MGR="podman"
 
 checkActiveKeysAmount() {
@@ -290,8 +293,12 @@ analyzeVersion() {
 }
 
 useUpstreamImages(){
-    for yaml_file in `find ${TANG_FUNCTION_DIR}/reg_test \( -iname "*.yaml" -o -iname "*.sh" \) -type f -print`
+    for yaml_file in `find ${TANG_FUNCTION_DIR}/reg_test* \( -iname "*.yaml" -o -iname "*.sh" \) -type f -print`
     do
         sed -i "s~\"registry.redhat.io/rhel9/tang\"~\"${TANG_IMAGE}\"~g" $yaml_file
     done
+}
+
+checkKonflux() {
+    pushd ${TANG_FUNCTION_DIR}; rm -v reg_test; test -z "${KONFLUX}" && ln -s reg_test_ori reg_test || ln -s reg_test_openshift_konflux reg_test; popd
 }

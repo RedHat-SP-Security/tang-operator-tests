@@ -32,6 +32,10 @@
 
 rlJournalStart
     rlPhaseStartSetup
+        if [ -z "${OPERATOR_NAME}" ];
+        then
+            OPERATOR_NAME=tang-operator
+        fi
         rlRun 'rlImport "common-cloud-orchestration/ocpop-lib"' || rlDie "cannot import ocpop lib"
         rlRun ". ../../TestHelpers/functions.sh" || rlDie "cannot import function script"
         TO_DAST_POD_COMPLETED=300 #seconds (DAST lasts around 120 seconds)
@@ -59,7 +63,12 @@ rlJournalStart
 
         # 3 - download configuration file template
         # WARNING: if tang-operator is changed to OpenShift organization, change this
-        rlRun "curl -o tang_operator.yaml https://raw.githubusercontent.com/latchset/tang-operator/main/tools/scan_tools/tang_operator_template.yaml"
+        if [ -z "${KONFLUX}" ];
+        then
+            rlRun "curl -o tang_operator.yaml https://raw.githubusercontent.com/latchset/tang-operator/main/tools/scan_tools/tang_operator_template.yaml"
+        else
+            rlRun "curl -o tang_operator.yaml https://raw.githubusercontent.com/openshift/nbde-tang-server/main/tools/scan_tools/tang_operator_template.yaml"
+        fi
 
         # 4 - adapt configuration file template (token, machine)
         if [ "${EXECUTION_MODE}" == "MINIKUBE" ];
@@ -67,12 +76,12 @@ rlJournalStart
             API_HOST_PORT=$(minikube ip)
             DEFAULT_TOKEN="TEST_TOKEN_UNREQUIRED_IN_MINIKUBE"
         else
-            API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d  ' ')
+            API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d  ' ' | sed -e s@https://@@g)
             DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" "$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}"\
-                            | grep ^tang-operator | grep service-account | awk '{print $1}')" -o json | jq -Mr '.data.token' | base64 -d)
+                            | grep ^${OPERATOR_NAME} | grep service-account | awk '{print $1}')" -o json | jq -Mr '.data.token' | base64 -d)
 	    test -z "${DEFAULT_TOKEN}" &&\
 		DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n  "${OPERATOR_NAMESPACE}" $("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}"\
-		            | grep ^tang-operator | awk '{print $1}') -o json | jq -M '.data | .[]' | tr -d '"')
+		            | grep ^${OPERATOR_NAME} | awk '{print $1}') -o json | jq -M '.data | .[]' | tr -d '"')
             echo "API_HOST_PORT=${API_HOST_PORT}"
             echo "DEFAULT_TOKEN=${DEFAULT_TOKEN}"
         fi
@@ -88,9 +97,10 @@ rlJournalStart
         pushd rapidast || exit
         sed -i s@"kubectl --kubeconfig=./kubeconfig "@"${OC_CLIENT} "@g helm/results.sh
         sed -i s@"secContext: '{}'"@"secContext: '{\"privileged\": true}'"@ helm/chart/values.yaml
-        sed -i s@'tag: "latest"'@'tag: "2.6.0"'@g helm/chart/values.yaml
+        sed -i s@'tag: "latest"'@'tag: "2.8.0"'@g helm/chart/values.yaml
 
         # 6 - run rapidast on adapted configuration file (via helm)
+        helm uninstall rapidast
         rlRun -c "helm install rapidast ./helm/chart/ --set-file rapidastConfig=${tmpdir}/tang_operator.yaml 2>/dev/null" 0 "Installing rapidast helm chart"
         pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "default" 5 1)
         rlRun "ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} default ${pod_name}" 0 "Checking POD ${pod_name} in Completed state [Timeout=${TO_DAST_POD_COMPLETED} secs.]"

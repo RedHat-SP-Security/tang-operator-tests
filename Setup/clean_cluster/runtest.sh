@@ -31,18 +31,22 @@
 
 rlJournalStart
     rlPhaseStartCleanup
+        if [ -z "${OPERATOR_NAME}" ];
+        then
+            OPERATOR_NAME=tang-operator
+        fi
         rlRun 'rlImport "common-cloud-orchestration/ocpop-lib"' || rlDie "cannot import ocpop lib"
         rlRun ". ../../TestHelpers/functions.sh" || rlDie "cannot import function script"
         TO_POD_CONTROLLER_TERMINATE=180 #seconds (for controller to end must wait longer)
 
         rlRun "ocpopCheckClusterStatus" 0 "Checking cluster status"
-        controller_name=$(ocpopGetPodNameWithPartialName "tang-operator-controller" "${OPERATOR_NAMESPACE}" 1)
+        controller_name=$(ocpopGetPodNameWithPartialName "${OPERATOR_NAME}-controller" "${OPERATOR_NAMESPACE}" 1)
         ocpopLogVerbose "Controller name:[${controller_name}]"
         if [ -n "${DOWNSTREAM_IMAGE_VERSION}" ] && [ "${DISABLE_BUNDLE_INSTALL_TESTS}" != "1" ];
         then
             rlRun "uninstallDownstreamVersion" 0 "Uninstalling downstream version"
         fi
-        rlRun "bundleStop" 0 "Cleaning installed tang-operator"
+        rlRun "ocpopBundleStop" 0 "Cleaning installed operator"
         if [ "${DISABLE_BUNDLE_INSTALL_TESTS}" != "1" ] && [ "${DISABLE_BUNDLE_UNINSTALL_TESTS}" != "1" ];
         then
           test -z "${controller_name}" ||
