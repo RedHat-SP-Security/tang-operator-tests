@@ -36,7 +36,10 @@ rlJournalStart
         rlRun ". ../../TestHelpers/functions.sh" || rlDie "cannot import function script"
         TO_ACTIVE_KEYS=60 #seconds
         TO_HIDDEN_KEYS=60 #seconds
-
+        if [ -z "${OPERATOR_NAME}" ];
+        then
+            OPERATOR_NAME=tang-operator
+        fi
         rlRun "${OC_CLIENT} apply -f ${TANG_FUNCTION_DIR}/reg_test/key_management_test/minimal-keyretrieve/daemons_v1alpha1_pv.yaml" 0 "Creating key management test pv"
         rlRun "${OC_CLIENT} apply -f ${TANG_FUNCTION_DIR}/reg_test/key_management_test/minimal-keyretrieve/daemons_v1alpha1_tangserver.yaml" 0 "Creating key management test tangserver"
         rlRun "ocpopCheckPodAmount 1 ${TO_POD_START} ${TEST_NAMESPACE}" 0 "Checking 1 POD is started [Timeout=${TO_POD_START} secs.]"
@@ -75,6 +78,7 @@ rlJournalStart
         rlRun "${OC_CLIENT} apply -f ${TANG_FUNCTION_DIR}/reg_test/key_management_test/multiple-keyretrieve/daemons_v1alpha1_pv.yaml" 0 "Creating multiple key management test pv"
         rlRun "${OC_CLIENT} apply -f ${TANG_FUNCTION_DIR}/reg_test/key_management_test/multiple-keyretrieve/daemons_v1alpha1_tangserver.yaml" 0 "Creating multiple key management test tangserver"
         sed "s/{{OPERATOR_NAMESPACE}}/${OPERATOR_NAMESPACE}/g" < "${TANG_FUNCTION_DIR}/reg_test/key_management_test/multiple-keyretrieve/daemons_v1alpha1_clusterrolebinding.yaml" | ${OC_CLIENT} apply -f -
+        sed "s/{{OPERATOR_NAME}}/${OPERATOR_NAME}/g" < $TANG_FUNCTION_DIR/reg_test/key_management_test/multiple-keyretrieve/daemons_v1alpha1_clusterrolebinding.yaml | ${OC_CLIENT} apply -f -
         rlRun "ocpopCheckPodAmount 3 ${TO_POD_START} ${TEST_NAMESPACE}" 0 "Checking 3 PODs are started [Timeout=${TO_POD_START} secs.]"
         pod1_name=$(ocpopGetPodNameWithPartialName "tang" "${TEST_NAMESPACE}" 5 1)
         pod2_name=$(ocpopGetPodNameWithPartialName "tang" "${TEST_NAMESPACE}" 5 2)
@@ -88,6 +92,7 @@ rlJournalStart
         rlRun "${OC_CLIENT} delete -f ${TANG_FUNCTION_DIR}/reg_test/key_management_test/multiple-keyretrieve/daemons_v1alpha1_tangserver.yaml" 0 "Deleting key management test tangserver"
         rlRun "${OC_CLIENT} delete -f ${TANG_FUNCTION_DIR}/reg_test/key_management_test/multiple-keyretrieve/daemons_v1alpha1_pv.yaml" 0 "Deleting key management test pv"
         sed "s/{{OPERATOR_NAMESPACE}}/${OPERATOR_NAMESPACE}/g" < "${TANG_FUNCTION_DIR}/reg_test/key_management_test/multiple-keyretrieve/daemons_v1alpha1_clusterrolebinding.yaml" | ${OC_CLIENT} delete -f -
+        sed "s/{{OPERATOR_NAME}}/${OPERATOR_NAME}/g" < $TANG_FUNCTION_DIR/reg_test/key_management_test/multiple-keyretrieve/daemons_v1alpha1_clusterrolebinding.yaml | ${OC_CLIENT} delete -f -
         rlRun "ocpopCheckPodAmount 0 ${TO_POD_STOP} ${TEST_NAMESPACE}" 0 "Checking no PODs continue running [Timeout=${TO_POD_STOP} secs.]"
         rlRun "ocpopCheckServiceAmount 0 ${TO_SERVICE_STOP} ${TEST_NAMESPACE}" 0 "Checking no Services continue running [Timeout=${TO_SERVICE_STOP} secs.]"
     rlPhaseEnd
