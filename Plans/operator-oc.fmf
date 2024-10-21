@@ -3,7 +3,9 @@ summary: test plan for running in oc
 environment:
   TEST_OC_CLIENT: "oc"
 # Can be specified version of operator, by default is used latest
-  IMAGE_VERSION: "quay.io/sec-eng-special/tang-operator-bundle-container:latest"
+  IMAGE_VERSION: "quay.io/sec-eng-special/nbde-tang-server-tang-operator-bundle:1.0.2-2"
+  TEST_CRC_MODE: "1"
+#  TEST_EXTERNAL_CLUSTER_MODE: "true"
 
 prepare:
   - how: shell
@@ -13,11 +15,19 @@ prepare:
      - dnf makecache
 
 discover:
+- name: Setup_crc_cluster_and_deploy_tang_operator
+  how: fmf
+  url: https://gitlab.cee.redhat.com/special-projects/tests/common-cloud-orchestration-internal
+  ref: main
+  test:
+   - /setup/setup-crc
+- name: Local_testing
   how: fmf
   test:
    - /Setup/creating_test_namespace
-   - /Sanity
-   - /Setup/clean_cluster
+   - /Sanity/DAST_test
+   - /Sanity/malware_detection_test
+#   - /Setup/clean_cluster
 
 adjust:
   - when: distro == rhel-9 or distro == centos-stream-9 
