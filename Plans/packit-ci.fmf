@@ -12,6 +12,10 @@ environment:
   TANG_IMAGE: "quay.io/sec-eng-special/fedora_tang_server"
   CI: "true"
   EXECUTION_MODE: "MINIKUBE"
+  #need to add due building operator in konflux
+  KONFLUX: "1"
+  V: "1"
+  OPERATOR_NAME: "nbde-tang-server" 
 
 discover:
   - name: Configure_test_system

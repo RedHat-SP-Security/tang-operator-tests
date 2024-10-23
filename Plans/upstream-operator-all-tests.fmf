@@ -13,6 +13,11 @@ environment:
   UPSTREAM_OPERATOR: "true"
   REPO_CLONE: "tang"
   EXECUTION_MODE: "minikube"
+  V: "1"
+  #need to add due building operator in konflux
+  KONFLUX: "1"
+  OPERATOR_NAME: "nbde-tang-server"
+  OLM_INSTALL_TIMEOUT: "10m"
 
 discover:
   - name: Configure_test_system
