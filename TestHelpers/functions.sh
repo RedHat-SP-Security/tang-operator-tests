@@ -302,3 +302,7 @@ useUpstreamImages(){
 checkKonflux() {
     pushd ${TANG_FUNCTION_DIR}; rm -v reg_test; test -z "${KONFLUX}" && ln -s reg_test_ori reg_test || ln -s reg_test_openshift_konflux reg_test; popd
 }
+
+cleanKonflux() {
+    pushd ${TANG_FUNCTION_DIR}; git restore reg_test || : ; popd
+}

@@ -58,5 +58,6 @@ rlJournalStart
             rlLog "Stop running registry container."
             rlRun "podman rm --force -t 2 registry"
         fi
+        rlRun "cleanKonflux" 0 "Cleaning Konflux related stuff"
     rlPhaseEnd
 rlJournalEnd
