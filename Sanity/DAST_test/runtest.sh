@@ -77,17 +77,17 @@ rlJournalStart
             DEFAULT_TOKEN="TEST_TOKEN_UNREQUIRED_IN_MINIKUBE"
         else
             API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d  ' ')
-	    if ! DEFAULT_TOKEN=$(oc whoami -t); then
-		 DEFAULT_TOKEN="${OCP_TOKEN}"
-	    fi
-	    test -z ${DEFAULT_TOKEN} &&
-                 DEFAULT_TOKEN=$(ocpopPrintTokenFromConfiguration)
+            if ! DEFAULT_TOKEN=$(oc whoami -t); then
+                DEFAULT_TOKEN="${OCP_TOKEN}"
+            fi
+            test -z ${DEFAULT_TOKEN} &&
+                DEFAULT_TOKEN=$(ocpopPrintTokenFromConfiguration)
             test -z "${DEFAULT_TOKEN}" &&\
-		 DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" "$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}"\
-                                | grep ^${OPERATOR_NAME} | grep service-account | awk '{print $1}')" -o json | jq -Mr '.data.token' | base64 -d)
-	    test -z "${DEFAULT_TOKEN}" &&\
-		DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n  "${OPERATOR_NAMESPACE}" $("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}"\
-		            | grep ^${OPERATOR_NAME} | awk '{print $1}') -o json | jq -M '.data | .[]' | tr -d '"')
+                DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" "$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}"\
+                            | grep ^${OPERATOR_NAME} | grep service-account | awk '{print $1}')" -o json | jq -Mr '.data.token' | base64 -d)
+            test -z "${DEFAULT_TOKEN}" &&\
+                DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n  "${OPERATOR_NAMESPACE}" $("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}"\
+                | grep ^${OPERATOR_NAME} | awk '{print $1}') -o json | jq -M '.data | .[]' | tr -d '"')
             echo "API_HOST_PORT=${API_HOST_PORT}"
             echo "DEFAULT_TOKEN=${DEFAULT_TOKEN}"
         fi
