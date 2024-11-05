@@ -1,0 +1,69 @@
+summary: Run tang operator test in crc cluster for KONFLUX ITS
+
+environment:
+  TEST_CRC_MODE: "1" 
+  TEST_OC_CLIENT: "oc"
+  V: "1"
+  KONFLUX: "1"
+  OPERATOR_NAME: "nbde-tang-server"
+  #pre released version
+  #should be injected by tekton pipeline in KONFLUX
+# IMAGE_VERSION: "quay.io/redhat-user-workloads/konflux-sec-eng-spec-tenant/nbde-tang-server-multiarch-bundle@sha256:0a5b79aa27ceb7f8cfc6bdf3e5187c04ee1f2b28cd5c68570e8c71637047049a"
+
+prepare:
+  - how: shell
+    script:
+     - systemctl disable --now dnf-makecache.service || true
+     - systemctl disable --now dnf-makecache.timer || true
+     - dnf makecache
+  - name: Install packages
+    how: install
+    package:
+      # For working with the SNAPSHOT var
+      - jq
+      # Just for interacting with the images
+      - podman
+  - name: Pull the image taken from SNAPSHOT_64
+    how: shell
+    # Note, the ' character works here because the ${SNAPSHOT} is not a shell
+    # environment variable. it is treated by tmt as a tmt variable which is
+    # injected into the script before it is evaluated by bash.
+    script: |
+        echo "This is where the test script goes."
+        echo "The base64 encoded snapshot is: ${SNAPSHOT}"
+        echo -n "The base64 decoded snapshot is: "
+        DECODED_SNAPSHOT=$(${SNAPSHOT} | base64 -d)
+        echo $DECODED_SNAPSHOT
+        echo "It contains the following container images:"
+        IMAGE_VERSION=$( ${SNAPSHOT} | base64 -d | jq -r '.components[].containerImage')
+        echo $IMAGE_VERSION
+        echo "Image which will be used for testing:"
+        echo IMAGE_VERSION=$(echo '${SNAPSHOT}' | base64 -d | jq -r '.components[1].containerImage') >> $TMT_PLAN_ENVIRONMENT_FILE
+
+discover:
+- name: Setup_crc_cluster
+  how: fmf
+  url: https://gitlab.cee.redhat.com/special-projects/tests/common-cloud-orchestration-internal
+  ref: main
+  test:
+   - /setup/get-set-oc-release
+   - /setup/setup-crc
+- name: Run_tang_operator_tests
+  how: fmf
+  url: https://github.com/RedHat-SP-Security/tang-operator-tests
+  ref: main
+  test:
+    - /Setup/creating_test_namespace
+    - /Sanity
+
+adjust+:
+  - when: distro == rhel-9 or distro == centos-stream-9 
+    prepare+:
+      - how: shell
+        script:
+          - dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm https://dl.fedoraproject.org/pub/epel/epel-next-release-latest-9.noarch.rpm
+  - when: OC is defined and OC == false
+    enabled: false
+    because: we want to run this plan only for KONFLUX CI, not PACKIT
+execute:
+    how: tmt
