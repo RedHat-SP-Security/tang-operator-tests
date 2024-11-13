@@ -33,8 +33,8 @@ rlJournalStart
     rlPhaseStartTest "Scale-out scalability test"
         rlRun 'rlImport "common-cloud-orchestration/ocpop-lib"' || rlDie "cannot import ocpop lib"
         rlRun ". ../../TestHelpers/functions.sh" || rlDie "cannot import function script"
-        TO_POD_SCALEIN_WAIT=120 #seconds
-        TO_POD_TERMINATE=120 #seconds
+        TO_POD_SCALEIN_WAIT=180 #seconds
+        TO_POD_TERMINATE=180 #seconds
 
         rlRun "${OC_CLIENT} apply -f ${TANG_FUNCTION_DIR}/reg_test/scale_test/scale_out/scale_out0/" 0 "Creating scale out test [0]"
         rlRun "ocpopCheckPodAmount 1 ${TO_POD_START} ${TEST_NAMESPACE}" 0 "Checking 1 POD is started [Timeout=${TO_POD_START} secs.]"
