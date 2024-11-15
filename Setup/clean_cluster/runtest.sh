@@ -46,7 +46,7 @@ rlJournalStart
         then
             rlRun "uninstallDownstreamVersion" 0 "Uninstalling downstream version"
         fi
-        rlRun "ocpopBundleStop" 0 "Cleaning installed operator"
+        rlRun "ocpopSoftwareUninstall" 0 "Cleaning installed operator"
         if [ "${DISABLE_BUNDLE_INSTALL_TESTS}" != "1" ] && [ "${DISABLE_BUNDLE_UNINSTALL_TESTS}" != "1" ];
         then
           test -z "${controller_name}" ||
