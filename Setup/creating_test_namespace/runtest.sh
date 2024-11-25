@@ -47,8 +47,8 @@ rlJournalStart
         rlRun "operator-sdk version > /dev/null" 0 "Checking operator-sdk installation"
         rlRun "ocpopCheckClusterStatus" 0 "Checking cluster status"
         # In case previous execution was abruptelly stopped:
-        rlRun "ocpopBundleInitialStop" 0 "Cleaning already installed operator (if any)"
-        rlRun "bundleStart" 0 "Installing ${OPERATOR_NAME}-bundle version:${VERSION}"
+        rlRun "ocpopSoftwareUninstall" 0 "Cleaning already installed operator (if any)"
+        rlRun "ocpopSoftwareInstall" 0 "Installing ${OPERATOR_NAME}-bundle"
         rlRun "${OC_CLIENT} apply -f ${TEST_NAMESPACE_FILE}" 0 "Creating test namespace:${TEST_NAMESPACE}"
         rlRun "${OC_CLIENT} get namespace ${TEST_NAMESPACE}" 0 "Checking test namespace:${TEST_NAMESPACE}"
         #go through all the files and set substition for TANG_IMAGE keyword
