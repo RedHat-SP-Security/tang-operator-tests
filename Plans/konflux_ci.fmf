@@ -8,7 +8,8 @@ environment:
   OPERATOR_NAME: "nbde-tang-server"
   #pre released version
   #should be injected by tekton pipeline in KONFLUX
-# IMAGE_VERSION: "quay.io/redhat-user-workloads/konflux-sec-eng-spec-tenant/nbde-tang-server-multiarch-bundle@sha256:0a5b79aa27ceb7f8cfc6bdf3e5187c04ee1f2b28cd5c68570e8c71637047049a"
+  #enable just as workaround solution for proof of working pipeline
+  IMAGE_VERSION: "quay.io/redhat-user-workloads/konflux-sec-eng-spec-tenant/nbde-tang-server-multiarch-bundle@sha256:0a5b79aa27ceb7f8cfc6bdf3e5187c04ee1f2b28cd5c68570e8c71637047049a"
 
 prepare:
   - how: shell
@@ -38,7 +39,7 @@ prepare:
         IMAGE_VERSION=$( ${SNAPSHOT} | base64 -d | jq -r '.components[].containerImage')
         echo $IMAGE_VERSION
         echo "Image which will be used for testing:"
-        echo IMAGE_VERSION=$(echo '${SNAPSHOT}' | base64 -d | jq -r '.components[1].containerImage') >> $TMT_PLAN_ENVIRONMENT_FILE
+#        echo IMAGE_VERSION=$(echo '${SNAPSHOT}' | base64 -d | jq -r '.components[1].containerImage') >> $TMT_PLAN_ENVIRONMENT_FILE
 
 discover:
 - name: Setup_crc_cluster
