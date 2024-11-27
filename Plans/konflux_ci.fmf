@@ -9,7 +9,7 @@ environment:
   #pre released version
   #should be injected by tekton pipeline in KONFLUX
   #enable just as workaround solution for proof of working pipeline
-  IMAGE_VERSION: "quay.io/redhat-user-workloads/konflux-sec-eng-spec-tenant/nbde-tang-server-multiarch-bundle@sha256:0a5b79aa27ceb7f8cfc6bdf3e5187c04ee1f2b28cd5c68570e8c71637047049a"
+  IMAGE_VERSION: "brew.registry.redhat.io/rh-osbs/iib:863070"
 
 prepare:
   - how: shell
