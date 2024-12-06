@@ -1,15 +1,14 @@
 summary: Run tang operator test in crc cluster for KONFLUX ITS
 
 environment:
-  TEST_CRC_MODE: "1" 
   TEST_OC_CLIENT: "oc"
   V: "1"
   KONFLUX: "1"
   OPERATOR_NAME: "nbde-tang-server"
   #pre released version
   #should be injected by tekton pipeline in KONFLUX
-  #enable just as workaround solution for proof of working pipeline
   #IMAGE_VERSION: "brew.registry.redhat.io/rh-osbs/iib:863070"
+  TEST_EXTERNAL_CLUSTER_MODE: "1"
 
 prepare:
   - how: shell
@@ -40,15 +39,20 @@ prepare:
         echo $IMAGE_VERSION
         echo "Image which will be used for testing:"
         echo IMAGE_VERSION=$(echo '${SNAPSHOT}' | base64 -d | jq -r '.components[1].containerImage') >> $TMT_PLAN_ENVIRONMENT_FILE
+  - name: Store KUBECONFIG secret
+    how: shell
+    script: |
+       #decoding kubeconfig content store it as tmt variable
+       echo "DECODED_KUBECONFIG_CONTENT=\"$(echo "${KUBECONFIG_CONTENT}" | base64 -d)\"" >> $TMT_PLAN_ENVIRONMENT_FILE
 
 discover:
-- name: Setup_crc_cluster
+- name: Install_and_setup_oc_operator_sdk
   how: fmf
-  url: https://gitlab.cee.redhat.com/special-projects/tests/common-cloud-orchestration-internal
-  ref: main
+  url: https://github.com/RedHat-SP-Security/common-cloud-orchestration
+  ref: pk_pipeline_konflux_tmt
   test:
-   - /setup/get-set-oc-release
-   - /setup/setup-crc
+    - /Setup/install_setup_oc
+    - /Setup/install_setup_operator-sdk
 - name: Run_tang_operator_tests
   how: fmf
   url: https://github.com/RedHat-SP-Security/tang-operator-tests
