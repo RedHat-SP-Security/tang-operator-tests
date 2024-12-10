@@ -19,6 +19,7 @@ jobs:
       - name: 'Yamllint'
         uses: karancode/yamllint-github-action@master
         with:
+          yamllint_config_datapath: .yamllint.yaml
           yamllint_file_or_dir: './'
           yamllint_strict: false
           yamllint_comment: true
