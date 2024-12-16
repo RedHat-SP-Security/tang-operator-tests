@@ -46,6 +46,10 @@ rlJournalStart
         rlRun "ocpopDumpOpenShiftClientStatus" 0 "Checking OpenshiftClient installation"
         rlRun "operator-sdk version > /dev/null" 0 "Checking operator-sdk installation"
         rlRun "ocpopCheckClusterStatus" 0 "Checking cluster status"
+        if [ -n "${KONFLUX}" ] && [ -n "${TEST_EXTERNAL_CLUSTER_MODE}" ]; then
+            rlRun "${OC_CLIENT} apply -f ../../TestHelpers/reg_test_openshift_konflux/all_test_namespace/image_digest_mirror_set_1_1.yaml"\
+                0 "Konflux: Creating Image Digest Mirror"
+        fi
         # In case previous execution was abruptelly stopped:
         rlRun "ocpopSoftwareUninstall" 0 "Cleaning already installed operator (if any)"
         rlRun "ocpopSoftwareInstall" 0 "Installing ${OPERATOR_NAME}-bundle"
@@ -67,7 +71,7 @@ rlJournalStart
               "Checking controller POD continues Running [${TIMEOUT_CONTROLLER_KEEPS_RUNNING} secs.]"
 	#SECENGSP-5573 Issue
         if [ "${DOWNSTREAM_OPERATOR_DEPLOYMENT_CLI}" == "true" ]; then
-            rlRun "ocpopCheckOperatorChannel tang-operator stable"
+            rlRun "ocpopCheckOperatorChannel ${OPERATOR_NAME} stable"
         fi
     rlPhaseEnd
 rlJournalEnd
