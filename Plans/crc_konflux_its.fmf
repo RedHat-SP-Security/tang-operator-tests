@@ -9,7 +9,7 @@ environment:
   #pre released version
   #should be injected by tekton pipeline in KONFLUX
   #enable just as workaround solution for proof of working pipeline
-  #IMAGE_VERSION: "brew.registry.redhat.io/rh-osbs/iib:863070"
+  #DOWNSTREAM_IMAGE_VERSION: "brew.registry.redhat.io/rh-osbs/iib:863070"
 
 prepare:
   - how: shell
@@ -36,10 +36,10 @@ prepare:
         DECODED_SNAPSHOT=$(${SNAPSHOT} | base64 -d)
         echo $DECODED_SNAPSHOT
         echo "It contains the following container images:"
-        IMAGE_VERSION=$( ${SNAPSHOT} | base64 -d | jq -r '.components[].containerImage')
-        echo $IMAGE_VERSION
+        DOWNSTREAM_IMAGE_VERSION=$( ${SNAPSHOT} | base64 -d | jq -r '.components[].containerImage')
+        echo $DOWNSTREAM_IMAGE_VERSION
         echo "Image which will be used for testing:"
-        echo IMAGE_VERSION=$(echo '${SNAPSHOT}' | base64 -d | jq -r '.components[1].containerImage') >> $TMT_PLAN_ENVIRONMENT_FILE
+        echo DOWNSTREAM_IMAGE_VERSION=$(echo '${SNAPSHOT}' | base64 -d | jq -r '.components[1].containerImage') >> $TMT_PLAN_ENVIRONMENT_FILE
 
 discover:
 - name: Setup_crc_cluster
