@@ -42,10 +42,6 @@ rlJournalStart
         rlRun "ocpopCheckClusterStatus" 0 "Checking cluster status"
         controller_name=$(ocpopGetPodNameWithPartialName "${OPERATOR_NAME}-controller" "${OPERATOR_NAMESPACE}" 1)
         ocpopLogVerbose "Controller name:[${controller_name}]"
-        if [ -n "${DOWNSTREAM_IMAGE_VERSION}" ] && [ "${DISABLE_BUNDLE_INSTALL_TESTS}" != "1" ];
-        then
-            rlRun "uninstallDownstreamVersion" 0 "Uninstalling downstream version"
-        fi
         rlRun "ocpopSoftwareUninstall" 0 "Cleaning installed operator"
         if [ "${DISABLE_BUNDLE_INSTALL_TESTS}" != "1" ] && [ "${DISABLE_BUNDLE_UNINSTALL_TESTS}" != "1" ];
         then
