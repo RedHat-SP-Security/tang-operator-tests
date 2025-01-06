@@ -38,16 +38,16 @@ TEST_PV_FILE_NAME="daemons_v1alpha1_pv.yaml"
 TEST_PV_FILE="${TEST_PVSC_PATH}/${TEST_PV_FILE_NAME}"
 TEST_SC_FILE_NAME="daemons_v1alpha1_storageclass.yaml"
 TEST_SC_FILE="${TEST_PVSC_PATH}/${TEST_SC_FILE_NAME}"
-TO_POD_START=300 #seconds
-TO_POD_STOP=30 #seconds
-TO_SERVICE_START=300 #seconds
-TO_SERVICE_STOP=300 #seconds
+test -z "${TO_POD_START}" && TO_POD_START=300 #seconds
+test -z "${TO_POD_STOP}" && TO_POD_STOP=300 #seconds
+test -z "${TO_SERVICE_START}" && TO_SERVICE_START=300 #seconds
+test -z "${TO_SERVICE_STOP}" && TO_SERVICE_STOP=300 #seconds
+test -z "${TO_ALL_POD_CONTROLLER_TERMINATE}" && TO_ALL_POD_CONTROLLER_TERMINATE=300 #seconds
 
 if [ -d /etc/profile.d/upstream_operator_init.sh ]; then
     sh /etc/profile.d/upstream_operator_init.sh
 fi
 
-TO_ALL_POD_CONTROLLER_TERMINATE=300 #seconds
 TO_KEY_ROTATION=10 #seconds
 [ -n "$TANG_IMAGE" ] || TANG_IMAGE="registry.redhat.io/rhel9/tang"
 
