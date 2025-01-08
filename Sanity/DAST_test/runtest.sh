@@ -39,6 +39,7 @@ rlJournalStart
         rlRun 'rlImport "common-cloud-orchestration/ocpop-lib"' || rlDie "cannot import ocpop lib"
         rlRun ". ../../TestHelpers/functions.sh" || rlDie "cannot import function script"
         TO_DAST_POD_COMPLETED=300 #seconds (DAST lasts around 120 seconds)
+        TO_RAPIDAST=30 #seconds to wait for Rapidast container to appear
         if ! command -v helm &> /dev/null; then
             ARCH=$(case $(uname -m) in x86_64) echo -n amd64 ;; aarch64) echo -n arm64 ;; *) echo -n "$(uname -m)" ;; esac)
             OS=$(uname | awk '{print tolower($0)}')
@@ -108,7 +109,7 @@ rlJournalStart
         # 6 - run rapidast on adapted configuration file (via helm)
         helm uninstall rapidast
         rlRun -c "helm install rapidast ./helm/chart/ --set-file rapidastConfig=${tmpdir}/tang_operator.yaml 2>/dev/null" 0 "Installing rapidast helm chart"
-        pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "default" 5 1)
+        pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "default" "${TO_RAPIDAST}" 1)
         rlRun "ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} default ${pod_name}" 0 "Checking POD ${pod_name} in Completed state [Timeout=${TO_DAST_POD_COMPLETED} secs.]"
 
         # 7 - extract results
