@@ -46,7 +46,7 @@ rlJournalStart
         rlRun "ocpopDumpOpenShiftClientStatus" 0 "Checking OpenshiftClient installation"
         rlRun "operator-sdk version > /dev/null" 0 "Checking operator-sdk installation"
         rlRun "ocpopCheckClusterStatus" 0 "Checking cluster status"
-        if [ -n "${KONFLUX}" ] && [ -n "${TEST_EXTERNAL_CLUSTER_MODE}" ]; then
+        if [ -n "${KONFLUX}" ] && [ -n "${DOWNSTREAM_IMAGE_VERSION}" ]; then
             rlRun "${OC_CLIENT} apply -f ../../TestHelpers/reg_test_openshift_konflux/all_test_namespace/image_digest_mirror_set_1_1.yaml"\
                 0 "Konflux: Creating Image Digest Mirror"
         fi
