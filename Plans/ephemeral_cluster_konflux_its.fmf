@@ -7,7 +7,7 @@ environment:
   OPERATOR_NAME: "nbde-tang-server"
   #pre released version
   #should be injected by tekton pipeline in KONFLUX
-  #DOWNSTREAM_IMAGE_VERSION: "brew.registry.redhat.io/rh-osbs/iib:863070"
+  DOWNSTREAM_IMAGE_VERSION: "registry.redhat.io/nbde-tang-server/nbde-tang-server-operator-bundle@sha256:b0bb3c502dad2e5b4773a56850e831b9e6cc203cfa2f4eab6f2db7ce328a3fad"
   TEST_EXTERNAL_CLUSTER_MODE: "1"
 
 prepare:
@@ -38,7 +38,7 @@ prepare:
         DOWNSTREAM_IMAGE_VERSION=$( ${SNAPSHOT} | base64 -d | jq -r '.components[].containerImage')
         echo $DOWNSTREAM_IMAGE_VERSION
         echo "Image which will be used for testing:"
-        echo DOWNSTREAM_IMAGE_VERSION=$(echo '${SNAPSHOT}' | base64 -d | jq -r '.components[1].containerImage') >> $TMT_PLAN_ENVIRONMENT_FILE
+#        echo DOWNSTREAM_IMAGE_VERSION=$(echo '${SNAPSHOT}' | base64 -d | jq -r '.components[1].containerImage') >> $TMT_PLAN_ENVIRONMENT_FILE
   - name: Store KUBECONFIG secret
     how: shell
     script: |

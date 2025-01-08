@@ -53,6 +53,10 @@ rlJournalStart
         # In case previous execution was abruptelly stopped:
         rlRun "ocpopSoftwareUninstall" 0 "Cleaning already installed operator (if any)"
         rlRun "ocpopSoftwareInstall" 0 "Installing ${OPERATOR_NAME}-bundle"
+        rlRun "oc get pod --all-namespaces"
+        controller_name=$(ocpopGetPodNameWithPartialName "${OPERATOR_NAME}-controller" "${OPERATOR_NAMESPACE}" "${TO_POD_START}")
+        rlRun "oc describe pod ${controller_name} -n ${OPERATOR_NAMESPACE}"
+        exit
         rlRun "${OC_CLIENT} apply -f ${TEST_NAMESPACE_FILE}" 0 "Creating test namespace:${TEST_NAMESPACE}"
         rlRun "${OC_CLIENT} get namespace ${TEST_NAMESPACE}" 0 "Checking test namespace:${TEST_NAMESPACE}"
         #go through all the files and set substition for TANG_IMAGE keyword
