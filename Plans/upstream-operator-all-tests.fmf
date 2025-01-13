@@ -1,4 +1,6 @@
 summary: Plan with installation of upstream tang operator.
+#not needed anymore, when it's tang onboarded in KONFLUX
+enabled: false
 
 
 prepare:
