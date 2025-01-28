@@ -62,7 +62,7 @@ rlJournalStart
     rlPhaseEnd
 
     rlPhaseStartTest "Controller runs appropriately"
-        rlRun "sleep ${TO_ALL_POD_CONTROLLER_TERMINATE}" 0 "Previous pods could be in terminating state and could be grepped when function search fo name of pod."
+        rlRun "sleep ${TO_ALL_POD_CONTROLLER_TERMINATE}" 0 "Previous pods could be in terminating state and could be grepped when function search of name of pod."
         ########## CHECK CONTROLLER RUNS WITH NO ERRORS #########
         rlLog "OPERATOR_NAME=${OPERATOR_NAME}"
         controller_name=$(ocpopGetPodNameWithPartialName "${OPERATOR_NAME}-controller" "${OPERATOR_NAMESPACE}" "${TO_POD_START}")
