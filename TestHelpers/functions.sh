@@ -42,7 +42,7 @@ test -z "${TO_POD_START}" && TO_POD_START=300 #seconds
 test -z "${TO_POD_STOP}" && TO_POD_STOP=300 #seconds
 test -z "${TO_SERVICE_START}" && TO_SERVICE_START=300 #seconds
 test -z "${TO_SERVICE_STOP}" && TO_SERVICE_STOP=300 #seconds
-test -z "${TO_ALL_POD_CONTROLLER_TERMINATE}" && TO_ALL_POD_CONTROLLER_TERMINATE=300 #seconds
+test -z "${TO_ALL_POD_CONTROLLER_TERMINATE}" && TO_ALL_POD_CONTROLLER_TERMINATE=60 #seconds
 
 if [ -d /etc/profile.d/upstream_operator_init.sh ]; then
     sh /etc/profile.d/upstream_operator_init.sh
