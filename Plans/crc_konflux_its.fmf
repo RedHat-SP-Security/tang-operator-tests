@@ -40,14 +40,18 @@ prepare:
     script: |
         echo "This is where the test script goes."
         echo "The base64 encoded snapshot is: ${SNAPSHOT}"
+
+        DECODED_SNAPSHOT=$(echo "${SNAPSHOT}" | base64 -d)
         echo -n "The base64 decoded snapshot is: "
-        DECODED_SNAPSHOT=$(${SNAPSHOT} | base64 -d)
-        echo $DECODED_SNAPSHOT
+        echo "${DECODED_SNAPSHOT}"
+
         echo "It contains the following container images:"
-        DOWNSTREAM_IMAGE_VERSION=$( ${SNAPSHOT} | base64 -d | jq -r '.components[].containerImage')
-        echo $DOWNSTREAM_IMAGE_VERSION
+        DOWNSTREAM_IMAGE_VERSION=$(echo "${DECODED_SNAPSHOT}" | jq -r '.components[].containerImage')
+        echo "${DOWNSTREAM_IMAGE_VERSION}"
+
         echo "Image which will be used for testing:"
-        echo DOWNSTREAM_IMAGE_VERSION=$(echo '${SNAPSHOT}' | base64 -d | jq -r '.components[1].containerImage') >> $TMT_PLAN_ENVIRONMENT_FILE
+        echo "DOWNSTREAM_IMAGE_VERSION=$(echo "${SNAPSHOT}" | base64 -d | jq -r '.components[1].containerImage')" >> $TMT_PLAN_ENVIRONMENT_FILE
+        echo "DECODED_SNAPSHOT=$(echo "${SNAPSHOT}" | base64 -d)" >> $TMT_PLAN_ENVIRONMENT_FILE
 
 discover:
 - name: Setup_crc_cluster
