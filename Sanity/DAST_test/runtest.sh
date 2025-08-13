@@ -72,33 +72,43 @@ rlJournalStart
         fi
 
         # 4 - adapt configuration file template (token, machine)
-        if [ "${EXECUTION_MODE}" == "MINIKUBE" ];
-        then
+        if [ "${EXECUTION_MODE}" == "MINIKUBE" ]; then
             API_HOST_PORT=$(minikube ip)
             DEFAULT_TOKEN="TEST_TOKEN_UNREQUIRED_IN_MINIKUBE"
         else
-            API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d  ' ')
-            if ! DEFAULT_TOKEN=$(oc whoami -t); then
-                DEFAULT_TOKEN="${OCP_TOKEN}"
+            # Ensure user is logged in
+            if ! oc whoami &>/dev/null; then
+                rlLog "Not logged in, attempting to login using service account..."
+                if [ -n "${OCP_TOKEN}" ]; then
+                    rlRun "oc login --token=${OCP_TOKEN} --server=${OC_CLIENT}" || rlDie "Cannot login to OCP"
+                else
+                    rlDie "No valid token to login, please provide OCP_TOKEN"
+                fi
             fi
-            test -z ${DEFAULT_TOKEN} &&
+
+            API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d ' ')
+
+            DEFAULT_TOKEN=$(oc whoami -t)
+            if [ -z "${DEFAULT_TOKEN}" ]; then
                 DEFAULT_TOKEN=$(ocpopPrintTokenFromConfiguration)
-            test -z "${DEFAULT_TOKEN}" &&\
-                DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" "$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}"\
-                            | grep ^${OPERATOR_NAME} | grep service-account | awk '{print $1}')" -o json | jq -Mr '.data.token' | base64 -d)
-            test -z "${DEFAULT_TOKEN}" &&\
-                DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n  "${OPERATOR_NAMESPACE}" $("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}"\
-                | grep ^${OPERATOR_NAME} | awk '{print $1}') -o json | jq -M '.data | .[]' | tr -d '"')
-            echo "API_HOST_PORT=${API_HOST_PORT}"
-            echo "DEFAULT_TOKEN=${DEFAULT_TOKEN}"
+            fi
+            if [ -z "${DEFAULT_TOKEN}" ]; then
+                # fallback: get token from operator secrets
+                DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" \
+                    "$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" | grep ^${OPERATOR_NAME} | grep service-account | awk '{print $1}')" \
+                    -o json | jq -Mr '.data.token' | base64 -d)
+            fi
         fi
+
+        echo "API_HOST_PORT=${API_HOST_PORT}"
+        echo "DEFAULT_TOKEN=${DEFAULT_TOKEN}"
+
+        # Replace placeholders in YAML
         sed -i s@API_HOST_PORT_HERE@"${API_HOST_PORT}"@g tang_operator.yaml
         sed -i s@AUTH_TOKEN_HERE@"${DEFAULT_TOKEN}"@g tang_operator.yaml
         sed -i s@OPERATOR_NAMESPACE_HERE@"${OPERATOR_NAMESPACE}"@g tang_operator.yaml
-        ocpopLogVerbose "API_HOST_PORT:[${API_HOST_PORT}]"
-        ocpopLogVerbose "DEFAULT_TOKEN:[${DEFAULT_TOKEN}]"
-        ocpopLogVerbose "OPERATOR_NAMESPACE provided to DAST:[${OPERATOR_NAMESPACE}]"
-        rlAssertNotEquals "Checking token not empty" "${DEFAULT_TOKEN}" ""
+
+rlAssertNotEquals "Checking token not empty" "${DEFAULT_TOKEN}" ""
 
         # 5 - adapt helm
         pushd rapidast || exit
