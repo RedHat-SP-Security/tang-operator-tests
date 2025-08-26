@@ -15,8 +15,8 @@
 #
 . /usr/share/beakerlib/beakerlib.sh || exit 1
 
-MINIKUBE_URL="https://storage.googleapis.com/minikube/releases/latest"
-MINIKUBE_FILE="minikube-latest.x86_64.rpm"
+MINIKUBE_URL="https://github.com/kubernetes/minikube/releases/latest/download"
+MINIKUBE_FILE="minikube-latest.arm64.rpm"
 MINIKUBE_URL_FILE="${MINIKUBE_URL}/${MINIKUBE_FILE}"
 OLM_INSTALL_TIMEOUT="5m"
 
@@ -40,7 +40,7 @@ rlJournalStart
           #installation of minikube
           rlRun "curl -LO '${MINIKUBE_URL_FILE}'"
           rlRun "rpm -Uvh '${MINIKUBE_FILE}' || true"
-          rlRun "curl -LO https://storage.googleapis.com/kubernetes-release/release/`curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt`/bin/linux/amd64/kubectl"
+          rlRun "curl -LO https://storage.googleapis.com/kubernetes-release/release/`curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt`/bin/linux/arm64/kubectl"
           rlRun "chmod +x kubectl"
           rlRun "mv kubectl  /usr/local/bin/"
           rlRun "kubectl version --client -o json"

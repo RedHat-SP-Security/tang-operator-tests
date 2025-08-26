@@ -80,27 +80,27 @@ rlJournalStart
             API_HOST_PORT=$(minikube ip)
             DEFAULT_TOKEN="TEST_TOKEN_UNREQUIRED_IN_MINIKUBE"
         else
-            # Unified and more robust token retrieval logic
             API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d ' ' || true)
             if [ -z "${API_HOST_PORT}" ]; then
                 rlDie "Failed to get API server address. Is OC_CLIENT configured correctly?"
             fi
 
-            # Prioritize an explicit OCP_TOKEN, then try `oc whoami -t`, then try service account
-            DEFAULT_TOKEN="${OCP_TOKEN}"
-            if [ -z "${DEFAULT_TOKEN}" ]; then
-                DEFAULT_TOKEN=$(oc whoami -t 2>/dev/null || true)
-            fi
-            if [ -z "${DEFAULT_TOKEN}" ]; then
-                DEFAULT_TOKEN=$(ocpopPrintTokenFromConfiguration || true)
-            fi
-            if [ -z "${DEFAULT_TOKEN}" ]; then
-                # Fallback to service account secret retrieval
-                secret_name=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" | grep -m 1 "^${OPERATOR_NAME}" | grep service-account | awk '{print $1}' || true)
-                if [ -n "${secret_name}" ]; then
-                    DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" "${secret_name}" -o json | jq -Mr '.data.token' | base64 -d)
-                fi
-            fi
+            # Create a dedicated service account for DAST tests
+            SA_NAME="dast-test-sa"
+            rlLog "Creating service account '${SA_NAME}' for DAST tests."
+            rlRun "${OC_CLIENT} create serviceaccount ${SA_NAME}"
+
+            # Grant necessary permissions to the service account
+            # This example grants cluster-admin role, adjust as needed for least privilege.
+            rlLog "Binding cluster-admin role to service account '${SA_NAME}'."
+            rlRun "${OC_CLIENT} adm policy add-cluster-role-to-user cluster-admin -z ${SA_NAME}"
+
+            # Retrieve the token from the service account secret
+            rlLog "Retrieving token from service account '${SA_NAME}'."
+            SECRET_NAME=$(${OC_CLIENT} get serviceaccount ${SA_NAME} -o jsonpath='{.secrets[].name}')
+            DEFAULT_TOKEN=$(${OC_CLIENT} get secret ${SECRET_NAME} -o jsonpath='{.data.token}' | base64 -d)
+
+            # Clean up the service account in the teardown phase to prevent resource leakage
         fi
 
         echo "API_HOST_PORT=${API_HOST_PORT}"
@@ -170,6 +170,16 @@ rlJournalStart
 
     rlPhaseEnd
     ############# /DAST TESTS #############
+    rlPhaseStartCleanup
+        rlLog "Cleaning up DAST service account and its role binding."
+        # Remove the role binding
+        # Replace cluster-admin with the actual role you added.
+        rlRun "${OC_CLIENT} adm policy remove-cluster-role-from-user cluster-admin -z ${SA_NAME}" || true
+        # Remove the service account
+        rlRun "${OC_CLIENT} delete serviceaccount ${SA_NAME}" || true
+        # Remove the temporary directory
+        rm -rf "${tmpdir}" || true
+    rlPhaseEnd
 
 rlJournalPrintText
 rlJournalEnd
