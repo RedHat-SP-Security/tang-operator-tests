@@ -187,6 +187,7 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     rlRun -c "bash ./helm/results.sh 2>/dev/null" 0 "Extracting DAST results"
 
     # Parse results
+    rlRun "ls "${tmpdir}"/rapidast/tangservers/DAST*tangservers/" 0 "tmp dir output"
     report_dir=$(ls -1d "${tmpdir}"/rapidast/tangservers/DAST*tangservers/ 2>/dev/null | head -1 | sed -e 's@/$@@g')
     ocpopLogVerbose "REPORT DIR: ${report_dir}"
     rlAssertNotEquals "Checking report_dir not empty" "${report_dir}" "" || rlDie "Report directory not found"

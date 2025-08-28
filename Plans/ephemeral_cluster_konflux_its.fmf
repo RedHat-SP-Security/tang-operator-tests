@@ -61,7 +61,7 @@ discover:
 - name: Run_tang_operator_tests
   how: fmf
   url: https://github.com/RedHat-SP-Security/tang-operator-tests
-  ref: main
+  ref: ap_fix_CI_failures
   test:
     - /Setup/creating_test_namespace
     - /Sanity
