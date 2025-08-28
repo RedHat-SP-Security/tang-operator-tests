@@ -101,8 +101,7 @@ rlPhaseStartSetup
     # Check for and create a ClusterRoleBinding for the service account
     if ! "${OC_CMD[@]}" get clusterrolebinding "dast-test-sa-binding" >/dev/null 2>&1; then
         rlLog "Creating ClusterRoleBinding to grant '$SA_NAME' cluster-admin permissions."
-        rlRun 'eval "${OC_CMD[@]} create clusterrolebinding 'dast-test-sa-binding' --clusterrole=cluster-admin --serviceaccount='$NAMESPACE':'$SA_NAME'""' || rlDie "Failed to create ClusterRoleBinding."
-    else
+        rlRun 'eval "${OC_CMD[@]} create clusterrolebinding dast-test-sa-binding --clusterrole=cluster-admin --serviceaccount=${NAMESPACE}:${SA_NAME}"' || rlDie "Failed to create ClusterRoleBinding."    else
         rlLog "ClusterRoleBinding for '$SA_NAME' already exists. Proceeding."
     fi
     # --- END OF NEW ADDITIONS ---
@@ -175,7 +174,7 @@ rlPhaseStartTest "Dynamic Application Security Testing"
 
     # NOTE: The ocpopGetPodNameWithPartialName function also needs to be updated to use the array
     # This change has to be made in the ocpop-lib file itself, not this script.
-    pod_name=$(ocpopGetPodNameWicthPartialName "rapidast" "default" "${TO_RAPIDAST}" 1) || rlDie "Failed to find rapidast pod name"
+    pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "default" "${TO_RAPIDAST}" 1) || rlDie "Failed to find rapidast pod name"
     
     if ! ocpopCheckPodState Completed "${TO_DAST_POD_COMPLETED}" default "${pod_name}"; then
         rlLog "DAST pod failed. Retrieving pod status and logs..."
