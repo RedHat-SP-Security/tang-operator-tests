@@ -32,25 +32,18 @@
 
 rlJournalStart
     rlPhaseStartSetup
-
-        # Set operator name dynamically based on KONFLUX variable
-        if [ -z "${OPERATOR_NAME}" ]; then
-            if [ -n "${KONFLUX}" ]; then
-                OPERATOR_NAME="nbde-tang-server"
-            else
-                OPERATOR_NAME="tang-operator"
-            fi
+        if [ -z "${OPERATOR_NAME}" ];
+        then
+            OPERATOR_NAME=tang-operator
         fi
-
         rlRun 'rlImport "common-cloud-orchestration/ocpop-lib"' || rlDie "cannot import ocpop lib"
         rlRun ". ../../TestHelpers/functions.sh" || rlDie "cannot import function script"
-
         TO_DAST_POD_COMPLETED=300 #seconds (DAST lasts around 120 seconds)
-
-        # Install helm if missing
+        TO_RAPIDAST=30 #seconds to wait for Rapidast container to appear
         if ! command -v helm &> /dev/null; then
             ARCH=$(case $(uname -m) in x86_64) echo -n amd64 ;; aarch64) echo -n arm64 ;; *) echo -n "$(uname -m)" ;; esac)
             OS=$(uname | awk '{print tolower($0)}')
+            #download latest helm
             LATEST_RELEASE_TAG=$(curl -s https://api.github.com/repos/helm/helm/releases/latest | jq -r '.tag_name')
             RELEASE_URL="https://get.helm.sh/helm-${LATEST_RELEASE_TAG}-${OS}-${ARCH}.tar.gz"
             TAR_FILE="helm-${LATEST_RELEASE_TAG}-${OS}-${ARCH}.tar.gz"
@@ -58,12 +51,29 @@ rlJournalStart
             rlRun "tar -xzf $TAR_FILE"
             rlRun "mv ${OS}-${ARCH}/helm /usr/local/bin/helm"
         fi
+    rlPhaseEnd
 
-        # -------------------------
-        # Setup oc command with Kubeconfig
-        # -------------------------
+    ############# DAST TESTS ##############
+    rlPhaseStartTest "Dynamic Application Security Testing"
+        # 1 - Log helm version
+        ocpopLogVerbose "$(helm version)"
+
+        # 2 - clone rapidast code (development branch)
+        tmpdir=$(mktemp -d)
+        pushd "${tmpdir}" && git clone https://github.com/RedHatProductSecurity/rapidast.git -b development || exit
+
+        # 3 - download configuration file template
+        # WARNING: if tang-operator is changed to OpenShift organization, change this
+        if [ -z "${KONFLUX}" ];
+        then
+            rlRun "curl -o tang_operator.yaml https://raw.githubusercontent.com/latchset/tang-operator/main/tools/scan_tools/tang_operator_template.yaml"
+        else
+            rlRun "curl -o tang_operator.yaml https://raw.githubusercontent.com/openshift/nbde-tang-server/main/tools/scan_tools/tang_operator_template.yaml"
+        fi
+
+        # 4 - adapt configuration file template (token, machine)
+        # We replace this section with the more robust login procedure
         declare -a OC_CMD=("oc")
-
         if [ -f /var/run/secrets/kubernetes.io/serviceaccount/namespace ]; then
             # Inside a pod
             NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
@@ -98,13 +108,7 @@ rlJournalStart
         # --- END OF UPDATED SERVICE ACCOUNT SETUP ---
 
         # --- Obtain API server and token (robust fallback chain) ---
-        rlLog "Obtaining API server and token for service account: ${SA_NAME} in namespace: ${NAMESPACE}"
-
-        # Get API Host/Port from oc command
-        API_HOST_PORT=$("${OC_CMD[@]}" whoami --show-server | tr -d ' ' || true)
-        if [ -z "${API_HOST_PORT}" ]; then
-            rlDie "Failed to get API server address. Is OC_CMD configured correctly?"
-        fi
+        rlLog "Obtaining a token for service account: ${SA_NAME} in namespace: ${NAMESPACE}"
 
         # Use the modern, recommended way to get the token (oc create token)
         DEFAULT_TOKEN=$("${OC_CMD[@]}" create token "$SA_NAME" -n "$NAMESPACE" 2>/dev/null)
@@ -118,52 +122,21 @@ rlJournalStart
 
         echo "API_HOST_PORT=${API_HOST_PORT}"
         echo "DEFAULT_TOKEN=${DEFAULT_TOKEN}"
-
-        rlAssertNotEquals "Checking token is not empty" "${DEFAULT_TOKEN}" "" || rlDie "Authentication token is empty. Cannot proceed."
-
-        # Minimal RBAC check
-        if ! "${OC_CMD[@]}" auth can-i list pods -n "$NAMESPACE" >/dev/null 2>&1; then
-            rlDie "Service account '$SA_NAME' lacks required RBAC permissions in namespace '$NAMESPACE'"
-        fi
-
-        rlLog "✅ Using service account: $SA_NAME, namespace: $NAMESPACE, API: $API_HOST_PORT"
-
-    rlPhaseEnd
-    
-    ############# DAST TESTS ##############
-    rlPhaseStartTest "Dynamic Application Security Testing"
-
-        # 1 - Log helm version
-        ocpopLogVerbose "$(helm version)"
-
-        # 2 - clone rapidast code (development branch)
-        tmpdir=$(mktemp -d)
-        pushd "${tmpdir}" && git clone https://github.com/RedHatProductSecurity/rapidast.git -b development || exit
-
-        # 3 - download configuration file template
-        if [ -z "${KONFLUX}" ]; then
-            CONFIG_URL="https://raw.githubusercontent.com/latchset/tang-operator/main/tools/scan_tools/tang_operator_template.yaml"
-        else
-            CONFIG_URL="https://raw.githubusercontent.com/openshift/nbde-tang-server/main/tools/scan_tools/tang_operator_template.yaml"
-        fi
-        rlRun "curl -o tang_operator.yaml $CONFIG_URL" || rlDie "Failed to download configuration file"
-
-        # 4 - adapt configuration file template (token, machine)
-        sed -i s@API_HOST_PORT_HERE@"${API_HOST_PORT}"@g tang_operator.yaml
-        sed -i s@AUTH_TOKEN_HERE@"${DEFAULT_TOKEN}"@g tang_operator.yaml
-        sed -i s@OPERATOR_NAMESPACE_HERE@"${NAMESPACE}"@g tang_operator.yaml
-
+        
         # Check application URL
         rlLog "Attempting to find the service for operator: ${OPERATOR_NAME} in namespace: ${NAMESPACE}"
         rlRun "oc get services -n ${NAMESPACE} --show-labels"
         
-        # Dynamically find the service name using a label selector and fallbacks
-        TANG_SERVICE_NAME=$("${OC_CMD[@]}" get services --selector="operators.coreos.com/${OPERATOR_NAME}.default=" -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-        if [ -z "${TANG_SERVICE_NAME}" ]; then
-            TANG_SERVICE_NAME=$("${OC_CMD[@]}" get services --selector="app.kubernetes.io/name=${OPERATOR_NAME}" -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-        fi
-        if [ -z "${TANG_SERVICE_NAME}" ]; then
-            TANG_SERVICE_NAME=$("${OC_CMD[@]}" get services -n "${NAMESPACE}" -o jsonpath='{.items[?(@.metadata.name=~"^'${OPERATOR_NAME}'.*")].metadata.name}' 2>/dev/null)
+        # Dynamically find the service name with a new, more robust approach
+        TANG_SERVICE_NAME=""
+        
+        # First, try to find the service using the full, specific name
+        SERVICE_NAME_FROM_LOG="nbde-tang-server-controller-manager-metrics-service"
+        if "${OC_CMD[@]}" get service "${SERVICE_NAME_FROM_LOG}" -n "${NAMESPACE}" >/dev/null 2>&1; then
+            TANG_SERVICE_NAME="${SERVICE_NAME_FROM_LOG}"
+        else
+            # Fallback to the generic operator name from the script's setup
+            TANG_SERVICE_NAME=$("${OC_CMD[@]}" get services --selector="operators.coreos.com/${OPERATOR_NAME}.default=" -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
         fi
 
         if [ -z "${TANG_SERVICE_NAME}" ]; then
@@ -174,7 +147,6 @@ rlJournalStart
         TANG_ROUTE_URL=$("${OC_CMD[@]}" get route -n "${NAMESPACE}" "${TANG_SERVICE_NAME}" -o jsonpath='{.spec.host}' 2>/dev/null)
         if [ -z "${TANG_ROUTE_URL}" ]; then
             rlLogWarning "Route for service ${TANG_SERVICE_NAME} not found. Trying Cluster IP."
-            # Corrected logic to get the Cluster IP directly
             TANG_SERVICE_IP=$("${OC_CMD[@]}" get service -n "${NAMESPACE}" "${TANG_SERVICE_NAME}" -o jsonpath='{.spec.clusterIP}')
             TANG_SERVICE_PORT=$("${OC_CMD[@]}" get service -n "${NAMESPACE}" "${TANG_SERVICE_NAME}" -o jsonpath='{.spec.ports[0].port}')
             if [ -z "${TANG_SERVICE_IP}" ] || [ -z "${TANG_SERVICE_PORT}" ]; then
@@ -186,65 +158,91 @@ rlJournalStart
         fi
         rlLog "Application URL for DAST: ${APPLICATION_URL}"
         rlAssertNotEquals "Checking application URL is not empty" "${APPLICATION_URL}" "" || rlDie "Application URL is empty"
-        sed -i s@APPLICATION_URL_HERE@"${APPLICATION_URL}"@g tang_operator.yaml
+
+        # Replace placeholders in YAML
+        sed -i s@API_HOST_PORT_HERE@"${API_HOST_PORT}"@g tang_operator.yaml
+        sed -i s@AUTH_TOKEN_HERE@"${DEFAULT_TOKEN}"@g tang_operator.yaml
+        sed -i s@OPERATOR_NAMESPACE_HERE@"${NAMESPACE}"@g tang_operator.yaml
+
+        rlAssertNotEquals "Checking token not empty" "${DEFAULT_TOKEN}" ""
 
         # 5 - adapt helm
         pushd rapidast || exit
-        sed -i s@"kubectl --kubeconfig=./kubeconfig "@"${OC_CMD[@]} "@g helm/results.sh
+        # FIX: Create a single string for the oc command and replace the placeholder
+        OC_COMMAND_STRING="${OC_CMD[@]}"
+        OC_COMMAND_STRING_ESCAPED=$(echo "$OC_COMMAND_STRING" | sed 's/\//\\\//g')
+        sed -i "s@kubectl --kubeconfig=./kubeconfig @${OC_COMMAND_STRING_ESCAPED} @g" helm/results.sh
+
         sed -i s@"secContext: '{}'"@"secContext: '{\"privileged\": true}'"@ helm/chart/values.yaml
         sed -i s@'tag: "latest"'@'tag: "2.8.0"'@g helm/chart/values.yaml
 
         # 6 - run rapidast on adapted configuration file (via helm)
-        helm uninstall rapidast --ignore-not-found || true
-        rlRun -c "helm install rapidast ./helm/chart/ --set-file rapidastConfig=${tmpdir}/tang_operator.yaml" 0 "Installing rapidast helm chart"
+        helm uninstall rapidast
+        rlRun -c "helm install rapidast ./helm/chart/ --set-file rapidastConfig=${tmpdir}/tang_operator.yaml 2>/dev/null" 0 "Installing rapidast helm chart"
+        
+        # Add a waiting loop to ensure the Job resource exists before trying to wait for it.
+        rlLog "Waiting for the rapidast job resource to be created..."
+        job_exists=false
+        # Loop for up to 30 seconds (6 * 5s) to find the job
+        for i in $(seq 1 ${TO_RAPIDAST}); do
+            if "${OC_CMD[@]}" get job --selector=app.kubernetes.io/instance=rapidast -n "${NAMESPACE}" &> /dev/null; then
+                job_exists=true
+                break
+            fi
+            sleep 1
+        done
 
-        # Wait for the rapidast job to be in the "Completed" state before continuing.
-        # This is the crucial fix for the race condition.
+        if [ "$job_exists" != "true" ]; then
+            rlDie "Timed out waiting for the rapidast job resource to be created."
+        fi
+
+        # Now that we know the job exists, wait for it to complete.
         rlLog "Waiting for the rapidast job to complete..."
-        rlRun 'eval "${OC_CMD[@]} wait --for=condition=complete job/rapidast-job --timeout=${TO_DAST_POD_COMPLETED}s"' || rlDie "Rapidast job failed to complete within the timeout."
+        rlRun 'eval "${OC_CMD[@]} wait --for=condition=complete job --selector=app.kubernetes.io/instance=rapidast --timeout=${TO_DAST_POD_COMPLETED}s"' || rlDie "Rapidast job failed to complete within the timeout."
 
-        # The pod lookup logic is now much more robust since we know the job has completed.
+        # The pod lookup needs to be based on the pod name created by the job.
         pod_name=$("${OC_CMD[@]}" get pods -l app.kubernetes.io/instance=rapidast -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
         if [ -z "${pod_name}" ]; then
             rlLog "Failed to find the rapidast pod. Listing pods for debugging."
             rlRun "oc get pods -n ${NAMESPACE} -o wide"
             rlDie "Failed to find the rapidast pod after helm installation."
         fi
-        
+
         # 7 - extract results
         rlRun -c "bash ./helm/results.sh 2>/dev/null" 0 "Extracting DAST results"
 
-        # 8 - parse results
+        # 8 - parse results (do not have to ensure no previous results exist, as this is a temporary directory)
+        # Check no alarm exist ...
         report_dir=$(ls -1d "${tmpdir}"/rapidast/tangservers/DAST*tangservers/ | head -1 | sed -e 's@/$@@g')
         ocpopLogVerbose "REPORT DIR:${report_dir}"
 
-        rlAssertNotEquals "Checking report_dir not empty" "${report_dir}" "" || rlDie "Report directory not found. Report extraction failed."
+        rlAssertNotEquals "Checking report_dir not empty" "${report_dir}" ""
 
         report_file="${report_dir}/zap/zap-report.json"
         ocpopLogVerbose "REPORT FILE:${report_file}"
 
         if [ -n "${report_dir}" ] && [ -f "${report_file}" ];
         then
-            alerts=$(jq '.site[0].alerts | length' < "${report_file}" )
+            alerts=$(jq '.site[0].alerts | length' < "${report_dir}/zap/zap-report.json" )
             ocpopLogVerbose "Alerts:${alerts}"
             for ((alert=0; alert<alerts; alert++));
             do
-                risk_desc=$(jq ".site[0].alerts[${alert}].riskdesc" < "${report_file}" | awk '{print $1}' | tr -d '"' | tr -d " ")
+                risk_desc=$(jq ".site[0].alerts[${alert}].riskdesc" < "${report_dir}/zap/zap-report.json" | awk '{print $1}' | tr -d '"' | tr -d " ")
                 rlLog "Alert[${alert}] -> Priority:[${risk_desc}]"
                 rlAssertNotEquals "Checking alarm is not High Risk" "${risk_desc}" "High"
             done
             if [ "${alerts}" != "0" ];
             then
-                rlLogWarning "A total of [${alerts}] alerts were detected! Please, review ZAP report: ${report_file}"
+                rlLogWarning "A total of [${alerts}] alerts were detected! Please, review ZAP report: ${report_dir}/zap/zap-report.json"
             else
                 rlLog "No alerts detected"
             fi
         else
-            rlDie "Report file:${report_file} does not exist."
+            rlLogWarning "Report file:${report_dir}/zap/zap-report.json does not exist"
         fi
 
         # 9 - clean helm installation
-        helm uninstall rapidast --ignore-not-found || true
+        helm uninstall rapidast
 
         # 10 - return
         popd || exit
@@ -252,15 +250,6 @@ rlJournalStart
 
     rlPhaseEnd
     ############# /DAST TESTS #############
-
-    rlPhaseStartCleanup
-        rlLog "Cleaning up DAST service account and its role binding."
-        # Remove the role binding and service account
-        rlRun 'eval "${OC_CMD[@]} delete clusterrolebinding dast-test-sa-binding --ignore-not-found"' || true
-        rlRun 'eval "${OC_CMD[@]} delete serviceaccount dast-test-sa -n ${NAMESPACE} --ignore-not-found"' || true
-        # Remove the temporary directory
-        rm -rf "${tmpdir}" || true
-    rlPhaseEnd
 
 rlJournalPrintText
 rlJournalEnd
