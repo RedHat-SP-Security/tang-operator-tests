@@ -32,13 +32,21 @@
 
 rlJournalStart
     rlPhaseStartSetup
-        if [ -z "${OPERATOR_NAME}" ];
-        then
-            OPERATOR_NAME=tang-operator
+
+        # Set operator name dynamically based on KONFLUX variable
+        if [ -z "${OPERATOR_NAME}" ]; then
+            if [ -n "${KONFLUX}" ]; then
+                OPERATOR_NAME="nbde-tang-server"
+            else
+                OPERATOR_NAME="tang-operator"
+            fi
         fi
+
         rlRun 'rlImport "common-cloud-orchestration/ocpop-lib"' || rlDie "cannot import ocpop lib"
         rlRun ". ../../TestHelpers/functions.sh" || rlDie "cannot import function script"
+
         TO_DAST_POD_COMPLETED=300 #seconds (DAST lasts around 120 seconds)
+
         if ! command -v helm &> /dev/null; then
             ARCH=$(case $(uname -m) in x86_64) echo -n amd64 ;; aarch64) echo -n arm64 ;; *) echo -n "$(uname -m)" ;; esac)
             OS=$(uname | awk '{print tolower($0)}')
@@ -50,10 +58,82 @@ rlJournalStart
             rlRun "tar -xzf $TAR_FILE"
             rlRun "mv ${OS}-${ARCH}/helm /usr/local/bin/helm"
         fi
+
+        # -------------------------
+        # Setup oc command with Kubeconfig
+        # -------------------------
+        declare -a OC_CMD=("oc")
+
+        if [ -f /var/run/secrets/kubernetes.io/serviceaccount/namespace ]; then
+            # Inside a pod
+            NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+            API_HOST_PORT="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
+            SA_NAME="${SA_NAME:-dast-test-sa}"
+        else
+            # Running on VM / external cluster
+            NAMESPACE="${OPERATOR_NAMESPACE:-default}"
+            SA_NAME="${SA_NAME:-dast-test-sa}"
+            if [ -z "${KUBECONFIG}" ]; then
+                KUBECONFIG="${HOME}/.kube/config"
+            fi
+            OC_CMD+=("--kubeconfig=${KUBECONFIG}")
+            API_HOST_PORT=$("${OC_CMD[@]}" config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+            rlLog "Detected API server from kubeconfig: ${API_HOST_PORT}"
+        fi
+
+        # --- UPDATED SERVICE ACCOUNT SETUP ---
+        rlLog "Verifying and creating service account and permissions for DAST..."
+        if ! "${OC_CMD[@]}" get sa "$SA_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
+            rlLog "Service account '$SA_NAME' not found. Creating it now."
+            rlRun 'eval "${OC_CMD[@]} create sa "$SA_NAME" -n "$NAMESPACE""' || rlDie "Failed to create service account '$SA_NAME'."
+        else
+            rlLog "Service account '$SA_NAME' already exists. Proceeding."
+        fi
+        if ! "${OC_CMD[@]}" get clusterrolebinding "dast-test-sa-binding" >/dev/null 2>&1; then
+            rlLog "Creating ClusterRoleBinding to grant '$SA_NAME' cluster-admin permissions."
+            rlRun 'eval "${OC_CMD[@]} create clusterrolebinding dast-test-sa-binding --clusterrole=cluster-admin --serviceaccount=${NAMESPACE}:${SA_NAME}"' || rlDie "Failed to create ClusterRoleBinding."
+        else
+            rlLog "ClusterRoleBinding for '$SA_NAME' already exists. Proceeding."
+        fi
+        # --- END OF UPDATED SERVICE ACCOUNT SETUP ---
+
+        # Obtain token with robust fallback logic
+        rlLog "Obtaining a token for service account: ${SA_NAME} in namespace: ${NAMESPACE}"
+        if [ "${EXECUTION_MODE}" == "MINIKUBE" ]; then
+            DEFAULT_TOKEN="TEST_TOKEN_UNREQUIRED_IN_MINIKUBE"
+        elif [ -f /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
+            # In-cluster token retrieval, most reliable for ephemeral
+            DEFAULT_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+        else
+            # Fallback for external clusters (CRC, VMs, etc.)
+            if ! DEFAULT_TOKEN=$(oc whoami -t); then
+                DEFAULT_TOKEN="${OCP_TOKEN}"
+            fi
+            if [ -z "${DEFAULT_TOKEN}" ]; then
+                DEFAULT_TOKEN=$(ocpopPrintTokenFromConfiguration)
+            fi
+            if [ -z "${DEFAULT_TOKEN}" ]; then
+                 DEFAULT_TOKEN=$("${OC_CMD[@]}" get secret -n "${NAMESPACE}" "$("${OC_CMD[@]}" get secret -n "${NAMESPACE}" | grep ^${OPERATOR_NAME} | grep service-account | awk '{print $1}')" -o json | jq -Mr '.data.token' | base64 -d)
+            fi
+        fi
+
+        rlLog "Default token: ${DEFAULT_TOKEN}"
+        rlAssertNotEquals "Checking token is not empty" "${DEFAULT_TOKEN}" "" || rlDie "Authentication token is empty"
+
+        # Minimal RBAC check
+        if ! "${OC_CMD[@]}" auth can-i list pods -n "$NAMESPACE" >/dev/null 2>&1; then
+            rlDie "Service account '$SA_NAME' lacks required RBAC permissions in namespace '$NAMESPACE'"
+        fi
+
+        rlLog "✅ Using service account: $SA_NAME, namespace: $NAMESPACE, API: $API_HOST_PORT"
+
     rlPhaseEnd
 
+    ---
+    
     ############# DAST TESTS ##############
     rlPhaseStartTest "Dynamic Application Security Testing"
+
         # 1 - Log helm version
         ocpopLogVerbose "$(helm version)"
 
@@ -62,7 +142,6 @@ rlJournalStart
         pushd "${tmpdir}" && git clone https://github.com/RedHatProductSecurity/rapidast.git -b development || exit
 
         # 3 - download configuration file template
-        # WARNING: if tang-operator is changed to OpenShift organization, change this
         if [ -z "${KONFLUX}" ];
         then
             rlRun "curl -o tang_operator.yaml https://raw.githubusercontent.com/latchset/tang-operator/main/tools/scan_tools/tang_operator_template.yaml"
@@ -71,36 +150,42 @@ rlJournalStart
         fi
 
         # 4 - adapt configuration file template (token, machine)
-        if [ "${EXECUTION_MODE}" == "MINIKUBE" ];
-        then
-            API_HOST_PORT=$(minikube ip)
-            DEFAULT_TOKEN="TEST_TOKEN_UNREQUIRED_IN_MINIKUBE"
-        else
-            API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d  ' ' | sed -e s@https://@@g)
-            DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" "$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}"\
-                            | grep ^${OPERATOR_NAME} | grep service-account | awk '{print $1}')" -o json | jq -Mr '.data.token' | base64 -d)
-            API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d  ' ')
-	    if ! DEFAULT_TOKEN=$(oc whoami -t); then
-		 DEFAULT_TOKEN="${OCP_TOKEN}"
-	    fi
-	    test -z ${DEFAULT_TOKEN} &&
-                 DEFAULT_TOKEN=$(ocpopPrintTokenFromConfiguration)
-            test -z "${DEFAULT_TOKEN}" &&\
-		 DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" "$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}"\
-                                | grep ^${OPERATOR_NAME} | grep service-account | awk '{print $1}')" -o json | jq -Mr '.data.token' | base64 -d)
-	    test -z "${DEFAULT_TOKEN}" &&\
-		DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n  "${OPERATOR_NAMESPACE}" $("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}"\
-		            | grep ^${OPERATOR_NAME} | awk '{print $1}') -o json | jq -M '.data | .[]' | tr -d '"')
-            echo "API_HOST_PORT=${API_HOST_PORT}"
-            echo "DEFAULT_TOKEN=${DEFAULT_TOKEN}"
-        fi
+        # Note: The 'if EXECUTION_MODE == MINIKUBE' block is redundant here
+        # since it's already handled in the setup phase.
         sed -i s@API_HOST_PORT_HERE@"${API_HOST_PORT}"@g tang_operator.yaml
         sed -i s@AUTH_TOKEN_HERE@"${DEFAULT_TOKEN}"@g tang_operator.yaml
-        sed -i s@OPERATOR_NAMESPACE_HERE@"${OPERATOR_NAMESPACE}"@g tang_operator.yaml
-        ocpopLogVerbose "API_HOST_PORT:[${API_HOST_PORT}]"
-        ocpopLogVerbose "DEFAULT_TOKEN:[${DEFAULT_TOKEN}]"
-        ocpopLogVerbose "OPERATOR_NAMESPACE provided to DAST:[${OPERATOR_NAMESPACE}]"
-        rlAssertNotEquals "Checking token not empty" "${DEFAULT_TOKEN}" ""
+        sed -i s@OPERATOR_NAMESPACE_HERE@"${NAMESPACE}"@g tang_operator.yaml
+
+        # Check application URL
+        rlLog "Attempting to find the service for operator: ${OPERATOR_NAME} in namespace: ${NAMESPACE}"
+        rlRun "oc get services -n ${NAMESPACE} --show-labels"
+        
+        # Dynamically find the service name using a label selector and fallbacks
+        TANG_SERVICE_NAME=$("${OC_CMD[@]}" get services --selector="operators.coreos.com/${OPERATOR_NAME}.default=" -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        if [ -z "${TANG_SERVICE_NAME}" ]; then
+            TANG_SERVICE_NAME=$("${OC_CMD[@]}" get services --selector="app.kubernetes.io/name=${OPERATOR_NAME}" -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        fi
+        if [ -z "${TANG_SERVICE_NAME}" ]; then
+            TANG_SERVICE_NAME=$("${OC_CMD[@]}" get services -n "${NAMESPACE}" -o jsonpath='{.items[?(@.metadata.name=~"^'${OPERATOR_NAME}'.*")].metadata.name}' 2>/dev/null)
+        fi
+
+        if [ -z "${TANG_SERVICE_NAME}" ]; then
+            rlDie "Failed to find the service for operator ${OPERATOR_NAME}. Check its labels or name."
+        fi
+        rlLog "Found operator service name: ${TANG_SERVICE_NAME}"
+
+        TANG_ROUTE_URL=$("${OC_CMD[@]}" get route -n "${NAMESPACE}" "${TANG_SERVICE_NAME}" -o jsonpath='{.spec.host}' 2>/dev/null)
+        if [ -z "${TANG_ROUTE_URL}" ]; then
+            rlLogWarning "Route for service ${TANG_SERVICE_NAME} not found. Trying Cluster IP."
+            TANG_SERVICE_IP=$(ocpopGetServiceIp "${TANG_SERVICE_NAME}" "${NAMESPACE}" 10) || rlDie "Failed to get service IP for ${OPERATOR_NAME}"
+            TANG_SERVICE_PORT=$(ocpopGetServicePort "${TANG_SERVICE_NAME}" "${NAMESPACE}") || rlDie "Failed to get service port"
+            APPLICATION_URL="https://${TANG_SERVICE_IP}:${TANG_SERVICE_PORT}"
+        else
+            APPLICATION_URL="https://${TANG_ROUTE_URL}"
+        fi
+        rlLog "Application URL for DAST: ${APPLICATION_URL}"
+        rlAssertNotEquals "Checking application URL is not empty" "${APPLICATION_URL}" "" || rlDie "Application URL is empty"
+        sed -i s@APPLICATION_URL_HERE@"${APPLICATION_URL}"@g tang_operator.yaml
 
         # 5 - adapt helm
         pushd rapidast || exit
@@ -109,10 +194,22 @@ rlJournalStart
         sed -i s@'tag: "latest"'@'tag: "2.8.0"'@g helm/chart/values.yaml
 
         # 6 - run rapidast on adapted configuration file (via helm)
-        helm uninstall rapidast
-        rlRun -c "helm install rapidast ./helm/chart/ --set-file rapidastConfig=${tmpdir}/tang_operator.yaml 2>/dev/null" 0 "Installing rapidast helm chart"
-        pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "default" 5 1)
-        rlRun "ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} default ${pod_name}" 0 "Checking POD ${pod_name} in Completed state [Timeout=${TO_DAST_POD_COMPLETED} secs.]"
+        helm uninstall rapidast || true
+        rlRun -c "helm install rapidast ./helm/chart/ --set-file rapidastConfig=${tmpdir}/tang_operator.yaml" 0 "Installing rapidast helm chart"
+
+        # Note: Added a more robust pod name discovery based on the helm release name 'rapidast'
+        pod_name=$("${OC_CMD[@]}" get pods -l app.kubernetes.io/instance=rapidast -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        if [ -z "${pod_name}" ]; then
+            rlDie "Failed to find the rapidast pod after helm installation."
+        fi
+        rlRun "ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} ${NAMESPACE} ${pod_name}" 0 "Checking POD ${pod_name} in Completed state [Timeout=${TO_DAST_POD_COMPLETED} secs.]"
+        # Add debugging for pod state failure
+        if [ $? -ne 0 ]; then
+            rlLog "DAST pod failed. Retrieving pod status and logs..."
+            rlRun "oc describe pod ${pod_name}"
+            rlRun "oc logs ${pod_name}"
+            rlDie "Pod ${pod_name} failed to reach 'Completed'"
+        fi
 
         # 7 - extract results
         rlRun -c "bash ./helm/results.sh 2>/dev/null" 0 "Extracting DAST results"
