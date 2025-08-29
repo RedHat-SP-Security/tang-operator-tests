@@ -129,8 +129,8 @@ rlJournalStart
         rlLog "✅ Using service account: $SA_NAME, namespace: $NAMESPACE, API: $API_HOST_PORT"
 
     rlPhaseEnd
-    ---
-    
+# This is a separator, not a command. Removed the '---' line that caused the 'command not found' error.
+
     ############# DAST TESTS ##############
     rlPhaseStartTest "Dynamic Application Security Testing"
 
@@ -175,8 +175,12 @@ rlJournalStart
         TANG_ROUTE_URL=$("${OC_CMD[@]}" get route -n "${NAMESPACE}" "${TANG_SERVICE_NAME}" -o jsonpath='{.spec.host}' 2>/dev/null)
         if [ -z "${TANG_ROUTE_URL}" ]; then
             rlLogWarning "Route for service ${TANG_SERVICE_NAME} not found. Trying Cluster IP."
-            TANG_SERVICE_IP=$(ocpopGetServiceIp "${TANG_SERVICE_NAME}" "${NAMESPACE}" 10) || rlDie "Failed to get service IP for ${OPERATOR_NAME}"
-            TANG_SERVICE_PORT=$(ocpopGetServicePort "${TANG_SERVICE_NAME}" "${NAMESPACE}") || rlDie "Failed to get service port"
+            # Corrected logic to get the Cluster IP directly
+            TANG_SERVICE_IP=$("${OC_CMD[@]}" get service -n "${NAMESPACE}" "${TANG_SERVICE_NAME}" -o jsonpath='{.spec.clusterIP}')
+            TANG_SERVICE_PORT=$("${OC_CMD[@]}" get service -n "${NAMESPACE}" "${TANG_SERVICE_NAME}" -o jsonpath='{.spec.ports[0].port}')
+            if [ -z "${TANG_SERVICE_IP}" ] || [ -z "${TANG_SERVICE_PORT}" ]; then
+                rlDie "Failed to get Cluster IP or port for service ${TANG_SERVICE_NAME}."
+            fi
             APPLICATION_URL="https://${TANG_SERVICE_IP}:${TANG_SERVICE_PORT}"
         else
             APPLICATION_URL="https://${TANG_ROUTE_URL}"
@@ -187,7 +191,7 @@ rlJournalStart
 
         # 5 - adapt helm
         pushd rapidast || exit
-        sed -i s@"kubectl --kubeconfig=./kubeconfig "@"${OC_CMD} "@g helm/results.sh
+        sed -i s@"kubectl --kubeconfig=./kubeconfig "@"${OC_CMD[@]} "@g helm/results.sh
         sed -i s@"secContext: '{}'"@"secContext: '{\"privileged\": true}'"@ helm/chart/values.yaml
         sed -i s@'tag: "latest"'@'tag: "2.8.0"'@g helm/chart/values.yaml
 
@@ -195,8 +199,11 @@ rlJournalStart
         helm uninstall rapidast --ignore-not-found || true
         rlRun -c "helm install rapidast ./helm/chart/ --set-file rapidastConfig=${tmpdir}/tang_operator.yaml" 0 "Installing rapidast helm chart"
 
+        # Corrected pod name discovery to be more robust
         pod_name=$("${OC_CMD[@]}" get pods -l app.kubernetes.io/instance=rapidast -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
         if [ -z "${pod_name}" ]; then
+            rlLog "Failed to find the rapidast pod. Listing pods for debugging."
+            rlRun "oc get pods -n ${NAMESPACE} -o wide"
             rlDie "Failed to find the rapidast pod after helm installation."
         fi
         rlRun "ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} ${NAMESPACE} ${pod_name}" 0 "Checking POD ${pod_name} in Completed state [Timeout=${TO_DAST_POD_COMPLETED} secs.]"
