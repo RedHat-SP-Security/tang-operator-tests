@@ -170,6 +170,10 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     fi
     rlAssertNotEquals "Checking token is not empty" "${DEFAULT_TOKEN}" "" || rlDie "Authentication token is empty"
 
+    rlLog "Attempting to find the tang-operator service in namespace: ${NAMESPACE}"
+    # Log all services and their labels for debugging
+    rlRun "oc get services -n ${NAMESPACE} --show-labels"
+
     # Dynamically find the tang-operator service name using a label selector
     TANG_SERVICE_NAME=$("${OC_CMD[@]}" get services --selector=app.kubernetes.io/name=tang-operator -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
     
