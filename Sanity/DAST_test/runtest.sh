@@ -108,8 +108,28 @@ rlPhaseStartSetup
 
     # Obtain token
     rlLog "Obtaining a token for service account: ${SA_NAME} in namespace: ${NAMESPACE}"
-    # Use the custom function from ocpop-lib
-    DEFAULT_TOKEN=$(ocpopGetSAtoken "${SA_NAME}" "${NAMESPACE}")
+    # Reverting to the original token retrieval logic as it was successful in a previous run.
+    # This block is more complex but handled the specific cluster setup correctly.
+    if [ "${EXECUTION_MODE}" == "MINIKUBE" ];
+    then
+        # The Minikube mode doesn't need a token, so we'll use a placeholder.
+        DEFAULT_TOKEN="TEST_TOKEN_UNREQUIRED_IN_MINIKUBE"
+    else
+        # Fallback to multiple methods to find the token
+        if ! DEFAULT_TOKEN=$(oc whoami -t); then
+            DEFAULT_TOKEN="${OCP_TOKEN}"
+        fi
+        if [ -z "${DEFAULT_TOKEN}" ]; then
+            DEFAULT_TOKEN=$(ocpopPrintTokenFromConfiguration)
+        fi
+        if [ -z "${DEFAULT_TOKEN}" ]; then
+            DEFAULT_TOKEN=$("${OC_CMD[@]}" get secret -n "${NAMESPACE}" "$("${OC_CMD[@]}" get secret -n "${NAMESPACE}" | grep ^${OPERATOR_NAME} | grep service-account | awk '{print $1}')" -o json | jq -Mr '.data.token' | base64 -d)
+        fi
+        if [ -z "${DEFAULT_TOKEN}" ]; then
+            DEFAULT_TOKEN=$("${OC_CMD[@]}" get secret -n "${NAMESPACE}" "$("${OC_CMD[@]}" get secret -n "${NAMESPACE}" | grep ^${OPERATOR_NAME} | awk '{print $1}')" -o json | jq -M '.data | .[]' | tr -d '"')
+        fi
+    fi
+
     rlLog "Default token: ${DEFAULT_TOKEN}"
     rlAssertNotEquals "Checking token is not empty" "${DEFAULT_TOKEN}" "" || rlDie "Authentication token is empty"
 
@@ -167,7 +187,9 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     TANG_ROUTE_URL=$("${OC_CMD[@]}" get route -n "${NAMESPACE}" "${TANG_SERVICE_NAME}" -o jsonpath='{.spec.host}' 2>/dev/null)
     if [ -z "${TANG_ROUTE_URL}" ]; then
         rlLogWarning "Route for service ${TANG_SERVICE_NAME} not found. Trying Cluster IP."
-        TANG_SERVICE_IP=$(ocpopGetServiceClusterIp "${TANG_SERVICE_NAME}" "${NAMESPACE}" 10) || rlDie "Failed to get service IP for tang-operator"
+        # The ocpopGetServiceIp and ocpopGetServicePort functions should be fixed in lib.sh
+        # The lib.sh script you provided already has the correct logic for this.
+        TANG_SERVICE_IP=$(ocpopGetServiceIp "${TANG_SERVICE_NAME}" "${NAMESPACE}" 10) || rlDie "Failed to get service IP for tang-operator"
         TANG_SERVICE_PORT=$(ocpopGetServicePort "${TANG_SERVICE_NAME}" "${NAMESPACE}") || rlDie "Failed to get service port"
         APPLICATION_URL="https://${TANG_SERVICE_IP}:${TANG_SERVICE_PORT}"
     else
@@ -181,6 +203,7 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     sed -i s@AUTH_TOKEN_HERE@"${DEFAULT_TOKEN}"@g tang_operator.yaml
     sed -i s@OPERATOR_NAMESPACE_HERE@"${NAMESPACE}"@g tang_operator.yaml
     # Add a new line to replace the application URL placeholder
+    # This assumes tang_operator_template.yaml has APPLICATION_URL_HERE
     sed -i s@APPLICATION_URL_HERE@"${APPLICATION_URL}"@g tang_operator.yaml
 
     # Adapt helm
