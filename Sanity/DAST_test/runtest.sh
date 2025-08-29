@@ -108,10 +108,16 @@ rlPhaseStartSetup
 
     # Obtain token
     rlLog "Obtaining a token for service account: ${SA_NAME} in namespace: ${NAMESPACE}"
+    # Use the custom function from ocpop-lib
     DEFAULT_TOKEN=$(ocpopGetSAtoken "${SA_NAME}" "${NAMESPACE}")
     rlLog "Default token: ${DEFAULT_TOKEN}"
     rlAssertNotEquals "Checking token is not empty" "${DEFAULT_TOKEN}" "" || rlDie "Authentication token is empty"
 
+
+    # Minimal RBAC check
+    if ! "${OC_CMD[@]}" auth can-i list pods -n "$NAMESPACE" >/dev/null 2>&1; then
+        rlDie "Service account '$SA_NAME' lacks required RBAC permissions in namespace '$NAMESPACE'"
+    fi
 
     rlLog "✅ Using service account: $SA_NAME, namespace: $NAMESPACE, API: $API_HOST_PORT"
 rlPhaseEnd
@@ -146,8 +152,14 @@ rlPhaseStartTest "Dynamic Application Security Testing"
 
     # Dynamically find the tang-operator service name using a label selector
     TANG_SERVICE_NAME=$("${OC_CMD[@]}" get services --selector=app.kubernetes.io/name=tang-operator -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    
+    # Fallback to a different label if the first one doesn't exist
     if [ -z "${TANG_SERVICE_NAME}" ]; then
-        rlDie "Failed to find tang-operator service using label selector. Check your operator's service labels."
+        TANG_SERVICE_NAME=$("${OC_CMD[@]}" get services --selector=app=tang-operator -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    fi
+
+    if [ -z "${TANG_SERVICE_NAME}" ]; then
+        rlDie "Failed to find tang-operator service. Check your operator's service labels."
     fi
     rlLog "Found tang-operator service name: ${TANG_SERVICE_NAME}"
 
