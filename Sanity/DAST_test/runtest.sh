@@ -108,19 +108,20 @@ rlPhaseStartSetup
 
     # Obtain token
     rlLog "Obtaining a token for service account: ${SA_NAME} in namespace: ${NAMESPACE}"
-    DEFAULT_TOKEN=$("${OC_CMD[@]}" create token "$SA_NAME" -n "$NAMESPACE" 2>/dev/null)
-    if [ -z "$DEFAULT_TOKEN" ]; then
-        rlDie "Failed to obtain token for service account: $SA_NAME in namespace: $NAMESPACE"
-    fi
-    rlLogVerbose "Default token: $DEFAULT_TOKEN"
 
-    # Login (only if inside pod; external kubeconfig usually already works)
-    if [ -f /var/run/secrets/kubernetes.io/serviceaccount/namespace ]; then
-        rlLog "Logging in with service account token..."
-        if ! "${OC_CMD[@]}" login --token="$DEFAULT_TOKEN" --server="$API_HOST_PORT" --insecure-skip-tls-verify=true >/dev/null 2>&1; then
-            rlDie "oc login with service account token failed"
+    # Use a projected token if available (best practice for in-cluster execution)
+    if [ -f /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
+        DEFAULT_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+        rlLog "Token obtained from projected service account file."
+    else
+        # Fallback to `oc create token` for external execution if projected token is not available
+        DEFAULT_TOKEN=$("${OC_CMD[@]}" create token "$SA_NAME" -n "$NAMESPACE" 2>/dev/null)
+        if [ -z "$DEFAULT_TOKEN" ]; then
+            rlDie "Failed to obtain token for service account: $SA_NAME in namespace: $NAMESPACE"
         fi
+        rlLog "Token obtained using 'oc create token' command."
     fi
+    rlLog "Default token: $DEFAULT_TOKEN"
 
     # Minimal RBAC check
     if ! "${OC_CMD[@]}" auth can-i list pods -n "$NAMESPACE" >/dev/null 2>&1; then
@@ -158,9 +159,30 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     fi
     rlAssertNotEquals "Checking token is not empty" "${DEFAULT_TOKEN}" "" || rlDie "Authentication token is empty"
 
+    # Find the service URL for the tang-operator
+    # The name of the service might vary, but is often based on the operator name
+    TANG_SERVICE_NAME="${OPERATOR_NAME}-service" # Adjust this to the correct service name
+    TANG_NAMESPACE="${NAMESPACE}"
+    
+    # Get the exposed URL
+    TANG_ROUTE_URL=$("${OC_CMD[@]}" get route -n "${TANG_NAMESPACE}" "${TANG_SERVICE_NAME}" -o jsonpath='{.spec.host}' 2>/dev/null)
+    if [ -z "${TANG_ROUTE_URL}" ]; then
+        rlLogWarning "Route for service ${TANG_SERVICE_NAME} not found. Trying Cluster IP."
+        TANG_SERVICE_IP=$(ocpopGetServiceClusterIp "${TANG_SERVICE_NAME}" "${TANG_NAMESPACE}" 10) || rlDie "Failed to get service IP for tang-operator"
+        TANG_SERVICE_PORT=$(ocpopGetServicePort "${TANG_SERVICE_NAME}" "${TANG_NAMESPACE}") || rlDie "Failed to get service port"
+        APPLICATION_URL="https://${TANG_SERVICE_IP}:${TANG_SERVICE_PORT}"
+    else
+        APPLICATION_URL="https://${TANG_ROUTE_URL}"
+    fi
+
+    rlLog "Application URL for DAST: ${APPLICATION_URL}"
+    rlAssertNotEquals "Checking application URL is not empty" "${APPLICATION_URL}" "" || rlDie "Application URL is empty"
+
     sed -i s@API_HOST_PORT_HERE@"${API_HOST_PORT}"@g tang_operator.yaml
     sed -i s@AUTH_TOKEN_HERE@"${DEFAULT_TOKEN}"@g tang_operator.yaml
     sed -i s@OPERATOR_NAMESPACE_HERE@"${NAMESPACE}"@g tang_operator.yaml
+    # Add a new line to replace the application URL placeholder
+    sed -i s@APPLICATION_URL_HERE@"${APPLICATION_URL}"@g tang_operator.yaml
 
     # Adapt helm
     pushd rapidast || rlDie "Failed to push to rapidast directory"
@@ -184,6 +206,10 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     fi
 
     # Extract results
+    # Add these lines for debugging
+    rlLog "Listing contents of the rapidast directory..."
+    rlRun "ls -R ${tmpdir}/rapidast"
+
     rlRun -c "bash ./helm/results.sh 2>/dev/null" 0 "Extracting DAST results"
 
     # Parse results
