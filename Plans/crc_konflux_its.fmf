@@ -67,7 +67,7 @@ discover:
   ref: ap_fix_CI_failures
   test:
     - /Setup/creating_test_namespace
-    - /Sanity
+    - /Sanity/DAST_test
 
 adjust+:
   - when: distro == rhel-9 or distro == centos-stream-9 
