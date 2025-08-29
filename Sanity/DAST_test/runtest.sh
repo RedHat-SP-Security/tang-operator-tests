@@ -180,32 +180,19 @@ rlJournalStart
         helm uninstall rapidast
         rlRun -c "helm install rapidast ./helm/chart/ --set-file rapidastConfig=${tmpdir}/tang_operator.yaml 2>/dev/null" 0 "Installing rapidast helm chart"
         
-        # Add a waiting loop to ensure the Job resource exists before trying to wait for it.
-        rlLog "Waiting for the rapidast job resource to be created..."
-        job_exists=false
-        # Loop for up to 30 seconds (6 * 5s) to find the job
-        for i in $(seq 1 ${TO_RAPIDAST}); do
-            if "${OC_CMD[@]}" get job --selector=app.kubernetes.io/instance=rapidast -n "${NAMESPACE}" &> /dev/null; then
-                job_exists=true
-                break
-            fi
-            sleep 1
-        done
-
-        if [ "$job_exists" != "true" ]; then
-            rlDie "Timed out waiting for the rapidast job resource to be created."
-        fi
-
-        # Now that we know the job exists, wait for it to complete.
-        rlLog "Waiting for the rapidast job to complete..."
-        rlRun 'eval "${OC_CMD[@]} wait --for=condition=complete job --selector=app.kubernetes.io/instance=rapidast --timeout=${TO_DAST_POD_COMPLETED}s"' || rlDie "Rapidast job failed to complete within the timeout."
-
-        # The pod lookup needs to be based on the pod name created by the job.
-        pod_name=$("${OC_CMD[@]}" get pods -l app.kubernetes.io/instance=rapidast -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-        if [ -z "${pod_name}" ]; then
-            rlLog "Failed to find the rapidast pod. Listing pods for debugging."
-            rlRun "oc get pods -n ${NAMESPACE} -o wide"
-            rlDie "Failed to find the rapidast pod after helm installation."
+        # Re-introducing the logic from the older, working script for pod discovery and state check
+        # This function seems to be better at handling the race condition of pod creation.
+        pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "${NAMESPACE}" "${TO_RAPIDAST}" 1) || rlDie "Failed to find rapidast pod name"
+        
+        # We check for a Completed state because DAST runs a single-shot job
+        rlRun "ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} ${NAMESPACE} ${pod_name}" 0 "Checking POD ${pod_name} in Completed state [Timeout=${TO_DAST_POD_COMPLETED} secs.]"
+        
+        # Add debugging for pod state failure
+        if [ $? -ne 0 ]; then
+            rlLog "DAST pod failed. Retrieving pod status and logs..."
+            rlRun "oc describe pod ${pod_name}"
+            rlRun "oc logs ${pod_name}"
+            rlDie "Pod ${pod_name} failed to reach 'Completed'"
         fi
 
         # 7 - extract results
@@ -250,6 +237,14 @@ rlJournalStart
 
     rlPhaseEnd
     ############# /DAST TESTS #############
+    rlPhaseStartCleanup
+        rlLog "Cleaning up DAST service account and its role binding."
+        # Remove the role binding and service account
+        rlRun 'eval "${OC_CMD[@]} delete clusterrolebinding dast-test-sa-binding --ignore-not-found"' || true
+        rlRun 'eval "${OC_CMD[@]} delete serviceaccount dast-test-sa -n ${NAMESPACE} --ignore-not-found"' || true
+        # Remove the temporary directory
+        rm -rf "${tmpdir}" || true
+    rlPhaseEnd
 
 rlJournalPrintText
 rlJournalEnd
