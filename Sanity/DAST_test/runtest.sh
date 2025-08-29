@@ -85,7 +85,7 @@ rlJournalStart
         rlLog "Verifying and creating service account and permissions for DAST..."
         if ! "${OC_CMD[@]}" get sa "$SA_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
             rlLog "Service account '$SA_NAME' not found. Creating it now."
-            rlRun 'eval "${OC_CMD[@]} create sa "$SA_NAME" -n "$NAMESPACE""' || rlDie "Failed to create service account '$SA_NAME'."
+            rlRun 'eval "${OC_CMD[@]} create sa \"$SA_NAME\" -n \"$NAMESPACE\""' || rlDie "Failed to create service account '$SA_NAME'."
         else
             rlLog "Service account '$SA_NAME' already exists. Proceeding."
         fi
@@ -97,28 +97,33 @@ rlJournalStart
         fi
         # --- END OF UPDATED SERVICE ACCOUNT SETUP ---
 
-        # Obtain token with robust fallback logic
-        rlLog "Obtaining a token for service account: ${SA_NAME} in namespace: ${NAMESPACE}"
-        if [ "${EXECUTION_MODE}" == "MINIKUBE" ]; then
-            DEFAULT_TOKEN="TEST_TOKEN_UNREQUIRED_IN_MINIKUBE"
-        elif [ -f /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
-            # In-cluster token retrieval, most reliable for ephemeral
-            DEFAULT_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
-        else
-            # Fallback for external clusters (CRC, VMs, etc.)
-            if ! DEFAULT_TOKEN=$(oc whoami -t); then
-                DEFAULT_TOKEN="${OCP_TOKEN}"
-            fi
-            if [ -z "${DEFAULT_TOKEN}" ]; then
-                DEFAULT_TOKEN=$(ocpopPrintTokenFromConfiguration)
-            fi
-            if [ -z "${DEFAULT_TOKEN}" ]; then
-                 DEFAULT_TOKEN=$("${OC_CMD[@]}" get secret -n "${NAMESPACE}" "$("${OC_CMD[@]}" get secret -n "${NAMESPACE}" | grep ^${OPERATOR_NAME} | grep service-account | awk '{print $1}')" -o json | jq -Mr '.data.token' | base64 -d)
+        # --- Obtain API server and token (robust fallback chain) ---
+        rlLog "Obtaining API server and token for service account: ${SA_NAME} in namespace: ${NAMESPACE}"
+
+        API_HOST_PORT=$("${OC_CMD[@]}" whoami --show-server | tr -d ' ' || true)
+        if [ -z "${API_HOST_PORT}" ]; then
+            rlDie "Failed to get API server address. Is OC_CMD configured correctly?"
+        fi
+
+        DEFAULT_TOKEN="${OCP_TOKEN}"
+        if [ -z "${DEFAULT_TOKEN}" ]; then
+            DEFAULT_TOKEN=$("${OC_CMD[@]}" whoami -t 2>/dev/null || true)
+        fi
+        if [ -z "${DEFAULT_TOKEN}" ]; then
+            DEFAULT_TOKEN=$(ocpopPrintTokenFromConfiguration || true)
+        fi
+        if [ -z "${DEFAULT_TOKEN}" ]; then
+            # fallback: get token from operator service account secret
+            secret_name=$("${OC_CMD[@]}" get secret -n "${NAMESPACE}" | grep -m 1 "^${OPERATOR_NAME}.*service-account" | awk '{print $1}' || true)
+            if [ -n "${secret_name}" ]; then
+                DEFAULT_TOKEN=$("${OC_CMD[@]}" get secret -n "${NAMESPACE}" "${secret_name}" -o json | jq -Mr '.data.token' | base64 -d)
             fi
         fi
 
-        rlLog "Default token: ${DEFAULT_TOKEN}"
-        rlAssertNotEquals "Checking token is not empty" "${DEFAULT_TOKEN}" "" || rlDie "Authentication token is empty"
+        echo "API_HOST_PORT=${API_HOST_PORT}"
+        echo "DEFAULT_TOKEN=${DEFAULT_TOKEN}"
+
+        rlAssertNotEquals "Checking token is not empty" "${DEFAULT_TOKEN}" "" || rlDie "Authentication token is empty. Cannot proceed."
 
         # Minimal RBAC check
         if ! "${OC_CMD[@]}" auth can-i list pods -n "$NAMESPACE" >/dev/null 2>&1; then
@@ -128,7 +133,6 @@ rlJournalStart
         rlLog "✅ Using service account: $SA_NAME, namespace: $NAMESPACE, API: $API_HOST_PORT"
 
     rlPhaseEnd
-
     ---
     
     ############# DAST TESTS ##############
