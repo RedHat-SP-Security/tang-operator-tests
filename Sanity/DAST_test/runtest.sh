@@ -108,25 +108,10 @@ rlPhaseStartSetup
 
     # Obtain token
     rlLog "Obtaining a token for service account: ${SA_NAME} in namespace: ${NAMESPACE}"
+    DEFAULT_TOKEN=$(ocpopGetSAtoken "${SA_NAME}" "${NAMESPACE}")
+    rlLog "Default token: ${DEFAULT_TOKEN}"
+    rlAssertNotEquals "Checking token is not empty" "${DEFAULT_TOKEN}" "" || rlDie "Authentication token is empty"
 
-    # Use a projected token if available (best practice for in-cluster execution)
-    if [ -f /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
-        DEFAULT_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
-        rlLog "Token obtained from projected service account file."
-    else
-        # Fallback to `oc create token` for external execution if projected token is not available
-        DEFAULT_TOKEN=$("${OC_CMD[@]}" create token "$SA_NAME" -n "$NAMESPACE" 2>/dev/null)
-        if [ -z "$DEFAULT_TOKEN" ]; then
-            rlDie "Failed to obtain token for service account: $SA_NAME in namespace: $NAMESPACE"
-        fi
-        rlLog "Token obtained using 'oc create token' command."
-    fi
-    rlLog "Default token: $DEFAULT_TOKEN"
-
-    # Minimal RBAC check
-    if ! "${OC_CMD[@]}" auth can-i list pods -n "$NAMESPACE" >/dev/null 2>&1; then
-        rlDie "Service account '$SA_NAME' lacks required RBAC permissions in namespace '$NAMESPACE'"
-    fi
 
     rlLog "✅ Using service account: $SA_NAME, namespace: $NAMESPACE, API: $API_HOST_PORT"
 rlPhaseEnd
@@ -159,17 +144,19 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     fi
     rlAssertNotEquals "Checking token is not empty" "${DEFAULT_TOKEN}" "" || rlDie "Authentication token is empty"
 
-    # Find the service URL for the tang-operator
-    # The name of the service might vary, but is often based on the operator name
-    TANG_SERVICE_NAME="${OPERATOR_NAME}-service" # Adjust this to the correct service name
-    TANG_NAMESPACE="${NAMESPACE}"
-    
+    # Dynamically find the tang-operator service name using a label selector
+    TANG_SERVICE_NAME=$("${OC_CMD[@]}" get services --selector=app.kubernetes.io/name=tang-operator -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    if [ -z "${TANG_SERVICE_NAME}" ]; then
+        rlDie "Failed to find tang-operator service using label selector. Check your operator's service labels."
+    fi
+    rlLog "Found tang-operator service name: ${TANG_SERVICE_NAME}"
+
     # Get the exposed URL
-    TANG_ROUTE_URL=$("${OC_CMD[@]}" get route -n "${TANG_NAMESPACE}" "${TANG_SERVICE_NAME}" -o jsonpath='{.spec.host}' 2>/dev/null)
+    TANG_ROUTE_URL=$("${OC_CMD[@]}" get route -n "${NAMESPACE}" "${TANG_SERVICE_NAME}" -o jsonpath='{.spec.host}' 2>/dev/null)
     if [ -z "${TANG_ROUTE_URL}" ]; then
         rlLogWarning "Route for service ${TANG_SERVICE_NAME} not found. Trying Cluster IP."
-        TANG_SERVICE_IP=$(ocpopGetServiceClusterIp "${TANG_SERVICE_NAME}" "${TANG_NAMESPACE}" 10) || rlDie "Failed to get service IP for tang-operator"
-        TANG_SERVICE_PORT=$(ocpopGetServicePort "${TANG_SERVICE_NAME}" "${TANG_NAMESPACE}") || rlDie "Failed to get service port"
+        TANG_SERVICE_IP=$(ocpopGetServiceClusterIp "${TANG_SERVICE_NAME}" "${NAMESPACE}" 10) || rlDie "Failed to get service IP for tang-operator"
+        TANG_SERVICE_PORT=$(ocpopGetServicePort "${TANG_SERVICE_NAME}" "${NAMESPACE}") || rlDie "Failed to get service port"
         APPLICATION_URL="https://${TANG_SERVICE_IP}:${TANG_SERVICE_PORT}"
     else
         APPLICATION_URL="https://${TANG_ROUTE_URL}"
