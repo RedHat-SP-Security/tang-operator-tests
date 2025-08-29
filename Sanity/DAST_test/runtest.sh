@@ -129,8 +129,7 @@ rlJournalStart
         rlLog "✅ Using service account: $SA_NAME, namespace: $NAMESPACE, API: $API_HOST_PORT"
 
     rlPhaseEnd
-# This is a separator, not a command. Removed the '---' line that caused the 'command not found' error.
-
+    
     ############# DAST TESTS ##############
     rlPhaseStartTest "Dynamic Application Security Testing"
 
@@ -199,23 +198,19 @@ rlJournalStart
         helm uninstall rapidast --ignore-not-found || true
         rlRun -c "helm install rapidast ./helm/chart/ --set-file rapidastConfig=${tmpdir}/tang_operator.yaml" 0 "Installing rapidast helm chart"
 
-        # Corrected pod name discovery to be more robust
+        # Wait for the rapidast job to be in the "Completed" state before continuing.
+        # This is the crucial fix for the race condition.
+        rlLog "Waiting for the rapidast job to complete..."
+        rlRun 'eval "${OC_CMD[@]} wait --for=condition=complete job/rapidast-job --timeout=${TO_DAST_POD_COMPLETED}s"' || rlDie "Rapidast job failed to complete within the timeout."
+
+        # The pod lookup logic is now much more robust since we know the job has completed.
         pod_name=$("${OC_CMD[@]}" get pods -l app.kubernetes.io/instance=rapidast -n "${NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
         if [ -z "${pod_name}" ]; then
             rlLog "Failed to find the rapidast pod. Listing pods for debugging."
             rlRun "oc get pods -n ${NAMESPACE} -o wide"
             rlDie "Failed to find the rapidast pod after helm installation."
         fi
-        rlRun "ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} ${NAMESPACE} ${pod_name}" 0 "Checking POD ${pod_name} in Completed state [Timeout=${TO_DAST_POD_COMPLETED} secs.]"
         
-        # Add debugging for pod state failure
-        if [ $? -ne 0 ]; then
-            rlLog "DAST pod failed. Retrieving pod status and logs..."
-            rlRun "oc describe pod ${pod_name}"
-            rlRun "oc logs ${pod_name}"
-            rlDie "Pod ${pod_name} failed to reach 'Completed'"
-        fi
-
         # 7 - extract results
         rlRun -c "bash ./helm/results.sh 2>/dev/null" 0 "Extracting DAST results"
 
