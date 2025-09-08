@@ -158,17 +158,34 @@ rlJournalStart
 
         # 8 - parse results (do not have to ensure no previous results exist, as this is a temporary directory)
         # Check no alarm exist ...
-        report_dir=$(ls -1d "${tmpdir}"/rapidast/tangservers/DAST*tangservers/ | head -1 | sed -e 's@/$@@g')
+        report_base_dir="${tmpdir}/rapidast/tangservers/"
+        report_dir="" # Initialize the variable as empty
+
+        if [ -d "${report_base_dir}" ]; then
+            # Use `find` to get the full path, which is more reliable than `ls`
+            report_dir=$(find "${report_base_dir}" -maxdepth 1 -type d -name "DAST*tangservers" | head -1)
+        fi
+        
         ocpopLogVerbose "REPORT DIR:${report_dir}"
+
+        # Now, check if the report_dir was actually found
+        if [ -z "${report_dir}" ]; then
+            rlDie "Failed to find the DAST report directory."
+        fi
 
         rlAssertNotEquals "Checking report_dir not empty" "${report_dir}" ""
 
         report_file="${report_dir}/zap/zap-report.json"
         ocpopLogVerbose "REPORT FILE:${report_file}"
 
+        # Make sure the file itself exists before trying to read it
+        if [ ! -f "${report_file}" ]; then
+            rlDie "DAST report file '${report_file}' does not exist."
+        fi
+
         if [ -n "${report_dir}" ] && [ -f "${report_file}" ];
         then
-            alerts=$(jq '.site[0].alerts | length' < "${report_dir}/zap/zap-report.json" )
+            alerts=$(jq '.site[0].alerts | length' < "${report_file}" )
             ocpopLogVerbose "Alerts:${alerts}"
             for ((alert=0; alert<alerts; alert++));
             do
