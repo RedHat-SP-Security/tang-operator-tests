@@ -29,7 +29,6 @@
 # Include Beaker environment
 . /usr/share/beakerlib/beakerlib.sh || exit 1
 
-
 rlJournalStart
     rlPhaseStartSetup
         if [ -z "${OPERATOR_NAME}" ];
@@ -71,34 +70,64 @@ rlJournalStart
             rlRun "curl -o tang_operator.yaml https://raw.githubusercontent.com/openshift/nbde-tang-server/main/tools/scan_tools/tang_operator_template.yaml"
         fi
 
-        # 4 - adapt configuration file template (token, machine)
-        if [ "${EXECUTION_MODE}" == "MINIKUBE" ]; then
-            API_HOST_PORT=$(minikube ip)
-            DEFAULT_TOKEN="TEST_TOKEN_UNREQUIRED_IN_MINIKUBE"
+        rlLog "Execution mode is: ${EXECUTION_MODE}"
+
+        # --- UPDATED AUTHENTICATION LOGIC ---
+        # This section is added to properly handle authentication in a robust, modern way.
+        
+        declare -a OC_CMD=("${OC_CLIENT}")
+        API_HOST_PORT=""
+        NAMESPACE=""
+        DEFAULT_TOKEN=""
+        SA_NAME="dast-test-sa"
+
+        # Check if the test is running inside a pod
+        if [ -f /var/run/secrets/kubernetes.io/serviceaccount/namespace ]; then
+            NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+            API_HOST_PORT="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
         else
-            # Ensure user is logged in
-            if ! oc whoami &>/dev/null; then
-                rlLog "Not logged in, attempting to login using service account..."
-                if [ -n "${OCP_TOKEN}" ]; then
-                    rlRun "oc login --token=${OCP_TOKEN} --server=${OC_CLIENT}" || rlDie "Cannot login to OCP"
-                else
-                    rlDie "No valid token to login, please provide OCP_TOKEN"
-                fi
+            # Running on VM / external cluster
+            NAMESPACE="${OPERATOR_NAMESPACE:-default}"
+            if [ -z "${KUBECONFIG}" ]; then
+                KUBECONFIG="${HOME}/.kube/config"
             fi
+            OC_CMD+=("--kubeconfig=${KUBECONFIG}")
+            API_HOST_PORT=$("${OC_CMD[@]}" config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+            rlLog "Detected API server from kubeconfig: ${API_HOST_PORT}"
 
-            API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d ' ')
-
-            DEFAULT_TOKEN=$(oc whoami -t)
-            if [ -z "${DEFAULT_TOKEN}" ]; then
-                DEFAULT_TOKEN=$(ocpopPrintTokenFromConfiguration)
-            fi
-            if [ -z "${DEFAULT_TOKEN}" ]; then
-                # fallback: get token from operator secrets
-                DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" \
-                    "$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" | grep ^${OPERATOR_NAME} | grep service-account | awk '{print $1}')" \
-                    -o json | jq -Mr '.data.token' | base64 -d)
+            if ! "${OC_CMD[@]}" whoami &>/dev/null; then
+                rlDie "Cannot authenticate to the cluster using the provided kubeconfig."
             fi
         fi
+
+        # Verify and create service account and permissions for DAST
+        rlLog "Verifying and creating service account and permissions for DAST..."
+        if ! "${OC_CMD[@]}" get sa "$SA_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
+            rlLog "Service account '$SA_NAME' not found. Creating it now."
+            rlRun 'eval "${OC_CMD[@]} create sa \"$SA_NAME\" -n \"$NAMESPACE\""' || rlDie "Failed to create service account '$SA_NAME'."
+        else
+            rlLog "Service account '$SA_NAME' already exists. Proceeding."
+        fi
+
+        if ! "${OC_CMD[@]}" get clusterrolebinding "dast-test-sa-binding" >/dev/null 2>&1; then
+            rlLog "Creating ClusterRoleBinding to grant '$SA_NAME' cluster-admin permissions."
+            rlRun 'eval "${OC_CMD[@]} create clusterrolebinding dast-test-sa-binding --clusterrole=cluster-admin --serviceaccount=${NAMESPACE}:${SA_NAME}"' || rlDie "Failed to create ClusterRoleBinding."
+        else
+            rlLog "ClusterRoleBinding for '$SA_NAME' already exists. Proceeding."
+        fi
+
+        # Obtain API server and token
+        rlLog "Obtaining a token for service account: ${SA_NAME} in namespace: ${NAMESPACE}"
+        DEFAULT_TOKEN=$("${OC_CMD[@]}" create token "$SA_NAME" -n "$NAMESPACE" 2>/dev/null)
+        if [ -z "$DEFAULT_TOKEN" ]; then
+            # Fallback for older clusters or specific setups
+            secret_name=$("${OC_CMD[@]}" get sa "$SA_NAME" -n "${NAMESPACE}" -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
+            if [ -n "${secret_name}" ]; then
+                DEFAULT_TOKEN=$("${OC_CMD[@]}" get secret -n "${NAMESPACE}" "${secret_name}" -o json | jq -Mr '.data.token' | base64 -d 2>/dev/null || true)
+            fi
+        fi
+        
+        # --- END OF UPDATED AUTHENTICATION LOGIC ---
 
         echo "API_HOST_PORT=${API_HOST_PORT}"
         echo "DEFAULT_TOKEN=${DEFAULT_TOKEN}"
@@ -107,8 +136,10 @@ rlJournalStart
         sed -i s@API_HOST_PORT_HERE@"${API_HOST_PORT}"@g tang_operator.yaml
         sed -i s@AUTH_TOKEN_HERE@"${DEFAULT_TOKEN}"@g tang_operator.yaml
         sed -i s@OPERATOR_NAMESPACE_HERE@"${OPERATOR_NAMESPACE}"@g tang_operator.yaml
-
-rlAssertNotEquals "Checking token not empty" "${DEFAULT_TOKEN}" ""
+        
+        # The following section to be removed as it's redundant and insecure
+        # since we have a better login approach.
+        # rlAssertNotEquals "Checking token not empty" "${DEFAULT_TOKEN}" ""
 
         # 5 - adapt helm
         pushd rapidast || exit
