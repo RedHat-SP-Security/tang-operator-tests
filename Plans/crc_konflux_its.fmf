@@ -57,7 +57,7 @@ discover:
 - name: Setup_crc_cluster
   how: fmf
   url: https://gitlab.cee.redhat.com/special-projects/tests/common-cloud-orchestration-internal
-  ref: ap_library_ip_adjustment
+  ref: main
   test:
    - /setup/get-set-oc-release
    - /setup/setup-crc
