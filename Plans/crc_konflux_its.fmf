@@ -3,7 +3,7 @@ summary: Run tang operator test in crc cluster for KONFLUX ITS
 environment:
   TEST_CRC_MODE: "1" 
   TEST_OC_CLIENT: "oc"
-  V: "1"
+  V: "3"
   KONFLUX: "1"
   OPERATOR_NAME: "nbde-tang-server"
   #pre released version
