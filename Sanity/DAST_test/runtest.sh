@@ -37,19 +37,37 @@ ocpopGetAuth() {
     local token
 
     declare -a oc_cmd=("${OC_CLIENT}")
+    rlLog "Attempting to obtain authentication token."
 
-    # Prioritize in-cluster token if available (ephemeral pipeline)
-    if [ -f /var/run/secrets/kubernetes.io/serviceaccount/namespace ]; then
-        namespace=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
-        api_host_port="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
-        token=$(< /var/run/secrets/kubernetes.io/serviceaccount/token)
-        rlLog "Detected in-cluster execution (namespace=${namespace})."
+    # Use a more reliable check for in-cluster execution
+    if [ -n "${KUBERNETES_SERVICE_HOST}" ]; then
+        rlLog "Condition met: KUBERNETES_SERVICE_HOST is set. Assuming in-cluster execution."
+        if [ -f "/var/run/secrets/kubernetes.io/serviceaccount/namespace" ]; then
+            namespace=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+            api_host_port="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
+            token=$(< /var/run/secrets/kubernetes.io/serviceaccount/token)
+            rlLog "Detected in-cluster execution (namespace=${namespace}). Token retrieved from volume."
+        else
+            rlLogWarning "KUBERNETES_SERVICE_HOST is set but service account files are not found. This is an unexpected state."
+            # Fallback to external cluster logic
+            rlLog "Falling back to external cluster logic to retrieve token."
+            namespace="${OPERATOR_NAMESPACE:-$(${OC_CLIENT} config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)}"
+            api_host_port=$(${OC_CLIENT} config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+            rlLog "Detected external cluster (namespace=${namespace}, api=${api_host_port})."
+            token=$("${oc_cmd[@]}" create token "$sa_name" -n "$namespace" 2>/dev/null || true)
+            if [ -z "$token" ]; then
+                secret_name=$("${oc_cmd[@]}" get sa "$sa_name" -n "$namespace" -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
+                if [ -n "$secret_name" ]; then
+                    token=$("${oc_cmd[@]}" get secret -n "$namespace" "$secret_name" -o json | jq -Mr '.data.token' | base64 -d 2>/dev/null || true)
+                fi
+            fi
+        fi
     else
-        # External cluster (CRC, developer machine, etc.)
+        rlLog "Condition not met: KUBERNETES_SERVICE_HOST is not set. Assuming external cluster execution."
         namespace="${OPERATOR_NAMESPACE:-$(${OC_CLIENT} config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)}"
         api_host_port=$(${OC_CLIENT} config view --minify -o jsonpath='{.clusters[0].cluster.server}')
         rlLog "Detected external cluster (namespace=${namespace}, api=${api_host_port})."
-
+        
         if [ -z "${KUBECONFIG}" ]; then
             KUBECONFIG="${HOME}/.kube/config"
         fi
@@ -59,9 +77,10 @@ ocpopGetAuth() {
             rlDie "Cannot authenticate to the cluster using kubeconfig!"
         fi
 
+        rlLog "Attempting to create token for service account: ${sa_name}."
         token=$("${oc_cmd[@]}" create token "$sa_name" -n "$namespace" 2>/dev/null || true)
         if [ -z "$token" ]; then
-            rlLogWarning "Falling back to SA secret (legacy)"
+            rlLogWarning "Failed to create token. Falling back to SA secret (legacy)."
             local secret_name
             secret_name=$("${oc_cmd[@]}" get sa "$sa_name" -n "$namespace" -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
             if [ -n "$secret_name" ]; then
@@ -129,6 +148,10 @@ rlJournalStart
         rlAssertNotEquals "Checking token not empty" "${DEFAULT_TOKEN}" ""
 
         # Replace placeholders in YAML
+        rlLog "Replacing placeholders in tang_operator.yaml with debug info."
+        rlLog "  API_HOST_PORT: ${API_HOST_PORT}"
+        rlLog "  AUTH_TOKEN: (token length: ${#DEFAULT_TOKEN})"
+        rlLog "  OPERATOR_NAMESPACE: ${OPERATOR_NAMESPACE}"
         sed -i s@API_HOST_PORT_HERE@"${API_HOST_PORT}"@g tang_operator.yaml
         sed -i s@AUTH_TOKEN_HERE@"${DEFAULT_TOKEN}"@g tang_operator.yaml
         sed -i s@OPERATOR_NAMESPACE_HERE@"${OPERATOR_NAMESPACE}"@g tang_operator.yaml
@@ -144,25 +167,41 @@ rlJournalStart
         rlRun -c "helm install rapidast ./helm/chart/ --set-file rapidastConfig=${tmpdir}/tang_operator.yaml 2>/dev/null" 0 "Installing rapidast helm chart"
         pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "default" "${TO_RAPIDAST}" 1)
 
+        rlLog "Checking DAST pod status. Pod name: ${pod_name}"
         if ! ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} default "${pod_name}" ; then
             rlLog "Pod ${pod_name} failed to reach 'Completed' state. Fetching logs for diagnosis."
             rlRun "oc logs \"${pod_name}\""
             rlDie "DAST pod failed. Please review the logs above for the root cause."
         fi
         
-        # 7 - extract results
-        rlRun -c "bash ./helm/results.sh 2>/dev/null" 0 "Extracting DAST results"
+        # 7 - extract results with a retry loop
+        local retry_count=0
+        local max_retries=3
+        local found_report=false
+
+        while [ "$found_report" = false ] && [ $retry_count -lt $max_retries ]; do
+            rlRun -c "bash ./helm/results.sh 2>/dev/null" 0 "Extracting DAST results (Attempt $((retry_count+1)))"
+            
+            report_base_dir="${tmpdir}/rapidast/tangservers/"
+            report_dir=""
+            if [ -d "${report_base_dir}" ]; then
+                report_dir=$(find "${report_base_dir}" -maxdepth 1 -type d -name "DAST*tangservers" | head -1)
+            fi
+            
+            if [ -n "${report_dir}" ]; then
+                ocpopLogVerbose "Report directory found: ${report_dir}"
+                found_report=true
+            else
+                rlLogWarning "Report directory not found. Retrying in 5 seconds... (Attempt $((retry_count+1)))"
+                sleep 5
+            fi
+            ((retry_count++))
+        done
 
         # 8 - parse results
-        report_base_dir="${tmpdir}/rapidast/tangservers/"
-        report_dir=""
-        if [ -d "${report_base_dir}" ]; then
-            report_dir=$(find "${report_base_dir}" -maxdepth 1 -type d -name "DAST*tangservers" | head -1)
-        fi
-        
         ocpopLogVerbose "REPORT DIR:${report_dir}"
-        if [ -z "${report_dir}" ]; then
-            rlDie "Failed to find the DAST report directory."
+        if [ "$found_report" = false ]; then
+            rlDie "Failed to find the DAST report directory after multiple retries."
         fi
 
         rlAssertNotEquals "Checking report_dir not empty" "${report_dir}" ""
@@ -174,20 +213,18 @@ rlJournalStart
             rlDie "DAST report file '${report_file}' does not exist."
         fi
 
-        if [ -n "${report_dir}" ] && [ -f "${report_file}" ]; then
-            alerts=$(jq '.site[0].alerts | length' < "${report_file}" )
-            ocpopLogVerbose "Alerts:${alerts}"
-            for ((alert=0; alert<alerts; alert++)); do
-                risk_desc=$(jq ".site[0].alerts[${alert}].riskdesc" < "${report_file}" | awk '{print $1}' | tr -d '"' | tr -d " ")
-                rlLog "Alert[${alert}] -> Priority:[${risk_desc}]"
-                rlAssertNotEquals "Checking alarm is not High Risk" "${risk_desc}" "High"
-            done
+        alerts=$(jq '.site[0].alerts | length' < "${report_file}" )
+        ocpopLogVerbose "Alerts:${alerts}"
+        for ((alert=0; alert<alerts; alert++)); do
+            risk_desc=$(jq ".site[0].alerts[${alert}].riskdesc" < "${report_file}" | awk '{print $1}' | tr -d '"' | tr -d " ")
+            rlLog "Alert[${alert}] -> Priority:[${risk_desc}]"
+            rlAssertNotEquals "Checking alarm is not High Risk" "${risk_desc}" "High"
             if [ "${alerts}" != "0" ]; then
                 rlLogWarning "A total of [${alerts}] alerts were detected! Please, review ZAP report: ${report_file}"
             else
                 rlLog "No alerts detected"
             fi
-        fi
+        done
 
         # 9 - clean helm installation
         helm uninstall rapidast
