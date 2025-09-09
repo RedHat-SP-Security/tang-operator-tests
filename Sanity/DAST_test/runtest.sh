@@ -81,49 +81,38 @@ rlJournalStart
         DEFAULT_TOKEN=""
         SA_NAME="dast-test-sa"
 
-        # Check if the test is running inside a pod
+        # Check if running inside a pod, which is typical for a pipeline job
         if [ -f /var/run/secrets/kubernetes.io/serviceaccount/namespace ]; then
             NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
             API_HOST_PORT="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
+            # Use the existing token from the pod's service account
+            DEFAULT_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+            rlLog "Detected cluster via pod identity. Using existing token."
         else
-            # Running on VM / external cluster
+            # Running on a VM / external cluster
             NAMESPACE="${OPERATOR_NAMESPACE:-default}"
             if [ -z "${KUBECONFIG}" ]; then
                 KUBECONFIG="${HOME}/.kube/config"
             fi
             OC_CMD+=("--kubeconfig=${KUBECONFIG}")
+            
+            # Use oc to get API server details
             API_HOST_PORT=$("${OC_CMD[@]}" config view --minify -o jsonpath='{.clusters[0].cluster.server}')
             rlLog "Detected API server from kubeconfig: ${API_HOST_PORT}"
 
+            # Validate authentication and get token for the user from kubeconfig
             if ! "${OC_CMD[@]}" whoami &>/dev/null; then
                 rlDie "Cannot authenticate to the cluster using the provided kubeconfig."
             fi
-        fi
-
-        # Verify and create service account and permissions for DAST
-        rlLog "Verifying and creating service account and permissions for DAST..."
-        if ! "${OC_CMD[@]}" get sa "$SA_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
-            rlLog "Service account '$SA_NAME' not found. Creating it now."
-            rlRun 'eval "${OC_CMD[@]} create sa \"$SA_NAME\" -n \"$NAMESPACE\""' || rlDie "Failed to create service account '$SA_NAME'."
-        else
-            rlLog "Service account '$SA_NAME' already exists. Proceeding."
-        fi
-
-        if ! "${OC_CMD[@]}" get clusterrolebinding "dast-test-sa-binding" >/dev/null 2>&1; then
-            rlLog "Creating ClusterRoleBinding to grant '$SA_NAME' cluster-admin permissions."
-            rlRun 'eval "${OC_CMD[@]} create clusterrolebinding dast-test-sa-binding --clusterrole=cluster-admin --serviceaccount=${NAMESPACE}:${SA_NAME}"' || rlDie "Failed to create ClusterRoleBinding."
-        else
-            rlLog "ClusterRoleBinding for '$SA_NAME' already exists. Proceeding."
-        fi
-
-        # Obtain API server and token
-        rlLog "Obtaining a token for service account: ${SA_NAME} in namespace: ${NAMESPACE}"
-        DEFAULT_TOKEN=$("${OC_CMD[@]}" create token "$SA_NAME" -n "$NAMESPACE" 2>/dev/null)
-        if [ -z "$DEFAULT_TOKEN" ]; then
-            # Fallback for older clusters or specific setups
-            secret_name=$("${OC_CMD[@]}" get sa "$SA_NAME" -n "${NAMESPACE}" -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
-            if [ -n "${secret_name}" ]; then
-                DEFAULT_TOKEN=$("${OC_CMD[@]}" get secret -n "${NAMESPACE}" "${secret_name}" -o json | jq -Mr '.data.token' | base64 -d 2>/dev/null || true)
+            # Fallback to creating a new token if a kubeconfig is used
+            rlLog "Obtaining a token for service account: ${SA_NAME} in namespace: ${NAMESPACE}"
+            DEFAULT_TOKEN=$("${OC_CMD[@]}" create token "$SA_NAME" -n "$NAMESPACE" 2>/dev/null)
+            if [ -z "$DEFAULT_TOKEN" ]; then
+                # Fallback for older clusters or specific setups
+                secret_name=$("${OC_CMD[@]}" get sa "$SA_NAME" -n "${NAMESPACE}" -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
+                if [ -n "${secret_name}" ]; then
+                    DEFAULT_TOKEN=$("${OC_CMD[@]}" get secret -n "${NAMESPACE}" "${secret_name}" -o json | jq -Mr '.data.token' | base64 -d 2>/dev/null || true)
+                fi
             fi
         fi
         
@@ -174,9 +163,14 @@ rlJournalStart
         
         ocpopLogVerbose "REPORT DIR:${report_dir}"
 
-        # Now, check if the report_dir was actually found
+        # Now, check if the report_dir was actually found, provide useful logs if not
         if [ -z "${report_dir}" ]; then
-            rlDie "Failed to find the DAST report directory."
+            # Since the pod failed earlier, this is expected. Log the error and exit gracefully.
+            rlLog "Failed to find the DAST report directory. This is expected as the DAST pod failed."
+            # Fetch the pod logs again for the final report to ensure the failure is clear
+            pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "default" "${TO_RAPIDAST}" 1)
+            rlRun "oc logs \"${pod_name}\""
+            rlDie "DAST report was not generated. Check pod logs for the root cause."
         fi
 
         rlAssertNotEquals "Checking report_dir not empty" "${report_dir}" ""
