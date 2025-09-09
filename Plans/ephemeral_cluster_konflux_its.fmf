@@ -61,12 +61,11 @@ discover:
 - name: Run_tang_operator_tests
   how: fmf
   url: https://github.com/RedHat-SP-Security/tang-operator-tests
-  ref: main
+  ref: ap_pipelines_fixes
   test:
     - /Setup/creating_test_namespace
     - /Sanity/DAST
     - /Sanity/functional_test
-
 
 adjust+:
   - when: distro == rhel-9 or distro == centos-stream-9 
