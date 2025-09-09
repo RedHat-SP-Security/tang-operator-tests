@@ -38,14 +38,14 @@ ocpopGetAuth() {
 
     declare -a oc_cmd=("${OC_CLIENT}")
 
+    # Prioritize in-cluster token if available (ephemeral pipeline)
     if [ -f /var/run/secrets/kubernetes.io/serviceaccount/namespace ]; then
-        # In-cluster pod (Konflux)
         namespace=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
         api_host_port="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
         token=$(< /var/run/secrets/kubernetes.io/serviceaccount/token)
         rlLog "Detected in-cluster execution (namespace=${namespace})."
     else
-        # External (CRC, developer machine, etc.)
+        # External cluster (CRC, developer machine, etc.)
         namespace="${OPERATOR_NAMESPACE:-$(${OC_CLIENT} config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)}"
         api_host_port=$(${OC_CLIENT} config view --minify -o jsonpath='{.clusters[0].cluster.server}')
         rlLog "Detected external cluster (namespace=${namespace}, api=${api_host_port})."
@@ -121,9 +121,12 @@ rlJournalStart
         rlLog "Execution mode is: ${EXECUTION_MODE}"
 
         # --- USE AUTH HELPER ---
+        # This section replaces all the manual authentication logic.
         eval "$(ocpopGetAuth dast-test-sa)"
-        rlAssertNotEquals "Checking token not empty" "${DEFAULT_TOKEN}" ""
         # -----------------------
+
+        # Assert that the token is not empty. If it is, the test cannot proceed.
+        rlAssertNotEquals "Checking token not empty" "${DEFAULT_TOKEN}" ""
 
         # Replace placeholders in YAML
         sed -i s@API_HOST_PORT_HERE@"${API_HOST_PORT}"@g tang_operator.yaml
@@ -159,10 +162,7 @@ rlJournalStart
         
         ocpopLogVerbose "REPORT DIR:${report_dir}"
         if [ -z "${report_dir}" ]; then
-            rlLog "Failed to find the DAST report directory. Expected as the pod failed."
-            pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "default" "${TO_RAPIDAST}" 1)
-            rlRun "oc logs \"${pod_name}\""
-            rlDie "DAST report was not generated. Check pod logs for the root cause."
+            rlDie "Failed to find the DAST report directory."
         fi
 
         rlAssertNotEquals "Checking report_dir not empty" "${report_dir}" ""
@@ -187,8 +187,6 @@ rlJournalStart
             else
                 rlLog "No alerts detected"
             fi
-        else
-            rlLogWarning "Report file:${report_file} does not exist"
         fi
 
         # 9 - clean helm installation
