@@ -132,14 +132,13 @@ rlJournalStart
         echo "API_HOST_PORT=${API_HOST_PORT}"
         echo "DEFAULT_TOKEN=${DEFAULT_TOKEN}"
 
+        # Assert that the token is not empty. If it is, the test cannot proceed.
+        rlAssertNotEquals "Checking token not empty" "${DEFAULT_TOKEN}" ""
+
         # Replace placeholders in YAML
         sed -i s@API_HOST_PORT_HERE@"${API_HOST_PORT}"@g tang_operator.yaml
         sed -i s@AUTH_TOKEN_HERE@"${DEFAULT_TOKEN}"@g tang_operator.yaml
         sed -i s@OPERATOR_NAMESPACE_HERE@"${OPERATOR_NAMESPACE}"@g tang_operator.yaml
-        
-        # The following section to be removed as it's redundant and insecure
-        # since we have a better login approach.
-        # rlAssertNotEquals "Checking token not empty" "${DEFAULT_TOKEN}" ""
 
         # 5 - adapt helm
         pushd rapidast || exit
@@ -151,8 +150,15 @@ rlJournalStart
         helm uninstall rapidast
         rlRun -c "helm install rapidast ./helm/chart/ --set-file rapidastConfig=${tmpdir}/tang_operator.yaml 2>/dev/null" 0 "Installing rapidast helm chart"
         pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "default" "${TO_RAPIDAST}" 1)
-        rlRun "ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} default ${pod_name}" 0 "Checking POD ${pod_name} in Completed state [Timeout=${TO_DAST_POD_COMPLETED} secs.]"
 
+        # Check the pod status and get logs if it fails
+        if ! ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} default "${pod_name}" ; then
+            rlLog "Pod ${pod_name} failed to reach 'Completed' state. Fetching logs for diagnosis."
+            # Use 'oc logs' to get details on why the pod failed
+            rlRun "oc logs \"${pod_name}\""
+            rlDie "DAST pod failed. Please review the logs above for the root cause."
+        fi
+        
         # 7 - extract results
         rlRun -c "bash ./helm/results.sh 2>/dev/null" 0 "Extracting DAST results"
 
