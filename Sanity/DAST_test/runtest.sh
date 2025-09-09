@@ -37,37 +37,21 @@ ocpopGetAuth() {
     local token
 
     declare -a oc_cmd=("${OC_CLIENT}")
-    rlLog "Attempting to obtain authentication token."
 
-    # Use a more reliable check for in-cluster execution
-    if [ -n "${KUBERNETES_SERVICE_HOST}" ]; then
-        rlLog "Condition met: KUBERNETES_SERVICE_HOST is set. Assuming in-cluster execution."
-        if [ -f "/var/run/secrets/kubernetes.io/serviceaccount/namespace" ]; then
-            namespace=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
-            api_host_port="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
-            token=$(< /var/run/secrets/kubernetes.io/serviceaccount/token)
-            rlLog "Detected in-cluster execution (namespace=${namespace}). Token retrieved from volume."
-        else
-            rlLogWarning "KUBERNETES_SERVICE_HOST is set but service account files are not found. This is an unexpected state."
-            # Fallback to external cluster logic
-            rlLog "Falling back to external cluster logic to retrieve token."
-            namespace="${OPERATOR_NAMESPACE:-$(${OC_CLIENT} config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)}"
-            api_host_port=$(${OC_CLIENT} config view --minify -o jsonpath='{.clusters[0].cluster.server}')
-            rlLog "Detected external cluster (namespace=${namespace}, api=${api_host_port})."
-            token=$("${oc_cmd[@]}" create token "$sa_name" -n "$namespace" 2>/dev/null || true)
-            if [ -z "$token" ]; then
-                secret_name=$("${oc_cmd[@]}" get sa "$sa_name" -n "$namespace" -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
-                if [ -n "$secret_name" ]; then
-                    token=$("${oc_cmd[@]}" get secret -n "$namespace" "$secret_name" -o json | jq -Mr '.data.token' | base64 -d 2>/dev/null || true)
-                fi
-            fi
-        fi
+    # Prioritize in-cluster token if available (ephemeral pipeline)
+    # The condition now checks for a standard environment variable that is always set in Kubernetes pods.
+    if [ -f /var/run/secrets/kubernetes.io/serviceaccount/namespace ] || [ -n "${KUBERNETES_SERVICE_HOST}" ]; then
+        # In-cluster pod (Konflux)
+        namespace=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+        api_host_port="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
+        token=$(< /var/run/secrets/kubernetes.io/serviceaccount/token)
+        rlLog "Detected in-cluster execution (namespace=${namespace})."
     else
-        rlLog "Condition not met: KUBERNETES_SERVICE_HOST is not set. Assuming external cluster execution."
+        # External (CRC, developer machine, etc.)
         namespace="${OPERATOR_NAMESPACE:-$(${OC_CLIENT} config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)}"
         api_host_port=$(${OC_CLIENT} config view --minify -o jsonpath='{.clusters[0].cluster.server}')
         rlLog "Detected external cluster (namespace=${namespace}, api=${api_host_port})."
-        
+
         if [ -z "${KUBECONFIG}" ]; then
             KUBECONFIG="${HOME}/.kube/config"
         fi
@@ -77,10 +61,9 @@ ocpopGetAuth() {
             rlDie "Cannot authenticate to the cluster using kubeconfig!"
         fi
 
-        rlLog "Attempting to create token for service account: ${sa_name}."
         token=$("${oc_cmd[@]}" create token "$sa_name" -n "$namespace" 2>/dev/null || true)
         if [ -z "$token" ]; then
-            rlLogWarning "Failed to create token. Falling back to SA secret (legacy)."
+            rlLogWarning "Falling back to SA secret (legacy)"
             local secret_name
             secret_name=$("${oc_cmd[@]}" get sa "$sa_name" -n "$namespace" -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
             if [ -n "$secret_name" ]; then
@@ -141,7 +124,6 @@ rlJournalStart
 
         # --- USE AUTH HELPER ---
         # This section replaces all the manual authentication logic.
-        rlLog "Manual logic of auth via custom function" 0 "Manual logic - custom function"
         eval "$(ocpopGetAuth dast-test-sa)"
         # -----------------------
 
