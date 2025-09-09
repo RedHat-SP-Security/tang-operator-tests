@@ -141,6 +141,7 @@ rlJournalStart
 
         # --- USE AUTH HELPER ---
         # This section replaces all the manual authentication logic.
+        rlLog "Manual logic of auth via custom function" 0 "Manual logic - custom function"
         eval "$(ocpopGetAuth dast-test-sa)"
         # -----------------------
 
