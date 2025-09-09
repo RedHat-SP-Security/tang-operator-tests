@@ -31,23 +31,21 @@
 
 # --- AUTH HELPER -----------------------------------------------------
 ocpopGetAuth() {
-    local sa_name=${1:-dast-test-sa}
     local namespace
     local api_host_port
     local token
 
     declare -a oc_cmd=("${OC_CLIENT}")
 
-    # Prioritize in-cluster token if available (ephemeral pipeline)
-    # The condition now checks for a standard environment variable that is always set in Kubernetes pods.
-    if [ -f /var/run/secrets/kubernetes.io/serviceaccount/namespace ] || [ -n "${KUBERNETES_SERVICE_HOST}" ]; then
-        # In-cluster pod (Konflux)
+    # 1. In-cluster (ephemeral / Konflux)
+    if [ -f /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
         namespace=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
         api_host_port="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
         token=$(< /var/run/secrets/kubernetes.io/serviceaccount/token)
         rlLog "Detected in-cluster execution (namespace=${namespace})."
+
+    # 2. External (CRC / dev machine)
     else
-        # External (CRC, developer machine, etc.)
         namespace="${OPERATOR_NAMESPACE:-$(${OC_CLIENT} config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)}"
         api_host_port=$(${OC_CLIENT} config view --minify -o jsonpath='{.clusters[0].cluster.server}')
         rlLog "Detected external cluster (namespace=${namespace}, api=${api_host_port})."
@@ -61,22 +59,14 @@ ocpopGetAuth() {
             rlDie "Cannot authenticate to the cluster using kubeconfig!"
         fi
 
-        token=$("${oc_cmd[@]}" create token "$sa_name" -n "$namespace" 2>/dev/null || true)
-        if [ -z "$token" ]; then
-            rlLogWarning "Falling back to SA secret (legacy)"
-            local secret_name
-            secret_name=$("${oc_cmd[@]}" get sa "$sa_name" -n "$namespace" -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
-            if [ -n "$secret_name" ]; then
-                token=$("${oc_cmd[@]}" get secret -n "$namespace" "$secret_name" -o json | jq -Mr '.data.token' | base64 -d 2>/dev/null || true)
-            fi
-        fi
+        token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
     fi
 
     echo "API_HOST_PORT=${api_host_port}"
     echo "DEFAULT_TOKEN=${token}"
     echo "NAMESPACE=${namespace}"
 
-    [ -z "$token" ] && rlDie "Failed to obtain a service account token!"
+    [ -z "$token" ] && rlDie "Failed to obtain an authentication token!"
 }
 # ---------------------------------------------------------------------
 
