@@ -49,15 +49,28 @@ ocpopGetAuth() {
         rlLog "========================="
     }
 
-    # --- 1. In-cluster SA token (CRC / local cluster) ---
+    # 1. Try in-cluster SA token (CRC / Konflux ephemeral SA)
     if [ -s "/var/run/secrets/kubernetes.io/serviceaccount/token" ]; then
         namespace=$(</var/run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null || echo "default")
         token=$(</var/run/secrets/kubernetes.io/serviceaccount/token)
         api_host_port="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
-        rlLog "Using in-cluster SA token (namespace=${namespace}, api=${api_host_port})"
+        if [ -n "$token" ]; then
+            rlLog "Using in-cluster SA token (namespace=${namespace}, api=${api_host_port})"
+        fi
     fi
 
-    # --- 2. KUBECONFIG token (ephemeral pipeline) ---
+    # 2. Try oc create token (needed for ephemeral clusters if SA token empty)
+    if [ -z "${token}" ]; then
+        rlLog "Attempting to create token for SA '${sa_name}'"
+        namespace=${namespace:-openshift-operators}
+        token=$(${oc_bin} -n "${namespace}" create token "${sa_name}" 2>/dev/null || true)
+        api_host_port=$(${oc_bin} config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || echo "")
+        if [ -n "$token" ]; then
+            rlLog "Using oc create token (namespace=${namespace}, api=${api_host_port})"
+        fi
+    fi
+
+    # 3. Try kubeconfig token (local/dev runs)
     if [ -z "${token}" ]; then
         KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
         if ${oc_bin} --kubeconfig="$KUBECONFIG" whoami &>/dev/null; then
@@ -68,14 +81,13 @@ ocpopGetAuth() {
         fi
     fi
 
-    # --- 3. Fallback (optional, only if needed) ---
+    # Final check
     if [ -z "${token}" ]; then
-        rlLogWarning "Token not found; skipping 'oc create token' (may fail on ephemeral clusters)"
+        rlLogWarning "All authentication methods failed"
         _auth_diag
         rlDie "Failed to obtain authentication token!"
     fi
 
-    # Output valid shell assignments
     echo "API_HOST_PORT='${api_host_port}'"
     echo "DEFAULT_TOKEN='${token}'"
     echo "NAMESPACE='${namespace}'"
