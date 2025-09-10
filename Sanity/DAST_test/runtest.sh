@@ -31,35 +31,92 @@
 
 # --- AUTH HELPER -----------------------------------------------------
 ocpopGetAuth() {
+    local sa_name=${1:-dast-test-sa}
     local namespace api_host_port token
     declare -a oc_cmd=("${OC_CLIENT:-oc}")
 
-    # 1. In-cluster (Ephemeral / Konflux)
-    if [ -s "/var/run/secrets/kubernetes.io/serviceaccount/token" ]; then
-        namespace=$(< /var/run/secrets/kubernetes.io/serviceaccount/namespace)
-        api_host_port="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
-        token=$(< /var/run/secrets/kubernetes.io/serviceaccount/token)
-        rlLog "Detected in-cluster execution (namespace=${namespace}, api=${api_host_port})."
+    # Helper to dump diagnostics for debugging auth issues
+    _auth_diag() {
+        rlLog "=== AUTH DIAGNOSTICS ==="
+        rlLog "Environment:"
+        rlRun "env | egrep 'KUBERNETES_SERVICE_HOST|KUBECONFIG|KONFLUX|EXECUTION_MODE' || true"
+        rlLog "ServiceAccount secret files (if present):"
+        rlRun "ls -l /var/run/secrets/kubernetes.io/ || true"
+        rlRun "ls -l /var/run/secrets/kubernetes.io/serviceaccount || true"
+        rlRun "cat /var/run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null || true"
+        rlRun "test -s /var/run/secrets/kubernetes.io/serviceaccount/token && echo 'token file exists and non-empty' || echo 'no token file or empty' || true"
+        rlLog "oc diagnostics (if oc available):"
+        rlRun "${oc_cmd[@]} version --client || true"
+        rlRun "${oc_cmd[@]} whoami 2>/dev/null || true"
+        rlRun "${oc_cmd[@]} whoami -t 2>/dev/null || true"
+        rlRun "${oc_cmd[@]} config view --minify -o yaml 2>/dev/null || true"
+        rlLog "========================="
+    }
 
-    # 2. External (CRC / dev machine)
-    else
-        namespace="${OPERATOR_NAMESPACE:-$(${oc_cmd[@]} config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)}"
-        api_host_port=$(${oc_cmd[@]} config view --minify -o jsonpath='{.clusters[0].cluster.server}')
-        rlLog "Detected external cluster (namespace=${namespace}, api=${api_host_port})."
+    # --- Strong in-cluster detection ---
+    # If any of these indicate "in-cluster", prefer mounted SA token:
+    # - KUBERNETES_SERVICE_HOST is set (standard in pods)
+    # - serviceaccount token file exists and non-empty
+    # - serviceaccount namespace file exists
+    if [ -n "${KUBERNETES_SERVICE_HOST:-}" ] || [ -s "/var/run/secrets/kubernetes.io/serviceaccount/token" ] || [ -f "/var/run/secrets/kubernetes.io/serviceaccount/namespace" ]; then
+        # Try to read namespace and token (be defensive)
+        if [ -f "/var/run/secrets/kubernetes.io/serviceaccount/namespace" ]; then
+            namespace=$(</var/run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null || echo "")
+        fi
+        api_host_port="https://${KUBERNETES_SERVICE_HOST:-localhost}:${KUBERNETES_SERVICE_PORT:-6443}"
+        if [ -s "/var/run/secrets/kubernetes.io/serviceaccount/token" ]; then
+            token=$(</var/run/secrets/kubernetes.io/serviceaccount/token 2>/dev/null || echo "")
+            rlLog "Detected in-cluster execution (namespace=${namespace:-unknown}, api=${api_host_port}). Using mounted SA token."
+        else
+            rlLogWarning "In-cluster indicator present but SA token file missing/empty."
+            _auth_diag
+            # Fall through to try kubeconfig-based token
+        fi
+    fi
 
+    # --- If we don't have a token yet, try external methods (kubeconfig / oc) ---
+    if [ -z "${token:-}" ]; then
+        # Ensure we have a kubeconfig path
+        if [ -z "${KUBECONFIG:-}" ]; then
+            KUBECONFIG="${HOME}/.kube/config"
+        fi
+        oc_cmd+=("--kubeconfig=${KUBECONFIG}")
+
+        # Check oc auth
         if ! "${oc_cmd[@]}" whoami &>/dev/null; then
+            rlLogWarning "oc whoami failed with kubeconfig '${KUBECONFIG}'. Attempting diagnostics..."
+            _auth_diag
             rlDie "Cannot authenticate to the cluster using kubeconfig!"
         fi
 
+        # Primary: use current user token (reliable for CRC/dev)
         token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
+        if [ -n "${token}" ]; then
+            namespace="${OPERATOR_NAMESPACE:-$(${oc_cmd[@]} config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)}"
+            api_host_port=$(${oc_cmd[@]} config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || echo "")
+            rlLog "Using kubeconfig token for external execution (namespace=${namespace}, api=${api_host_port})."
+        else
+            rlLogWarning "'oc whoami -t' returned empty. Trying 'oc create token' for SA: ${sa_name} in namespace ${OPERATOR_NAMESPACE:-default}"
+            # Try to create SA token (works when user has permission)
+            token=$("${oc_cmd[@]}" create token "${sa_name}" -n "${OPERATOR_NAMESPACE:-default}" 2>/dev/null || true)
+            if [ -n "${token}" ]; then
+                namespace="${OPERATOR_NAMESPACE:-default}"
+                api_host_port=$(${oc_cmd[@]} config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || echo "")
+                rlLog "Obtained token via 'oc create token' for SA ${sa_name}."
+            else
+                rlLogWarning "Failed to get token via 'oc create token'."
+                _auth_diag
+            fi
+        fi
     fi
 
+    # Export (echo) and final checks
     echo "API_HOST_PORT=${api_host_port}"
     echo "DEFAULT_TOKEN=${token}"
     echo "NAMESPACE=${namespace}"
 
     rlLog "Token length: ${#token}"
-    [ -z "$token" ] && rlDie "Failed to obtain an authentication token!"
+    [ -z "${token}" ] && rlDie "Failed to obtain an authentication token! See earlier diagnostics above."
 }
 # ---------------------------------------------------------------------
 
@@ -92,6 +149,13 @@ rlJournalStart
     rlPhaseStartTest "Dynamic Application Security Testing"
         # local oc client fallback
         oc_client="${OC_CLIENT:-oc}"
+
+        # Namespace for Rapidast
+        RAPIDAST_NS="rapidast-test"
+        rlLog "Ensuring namespace ${RAPIDAST_NS} exists with required SCC."
+        ${oc_client} get ns "${RAPIDAST_NS}" >/dev/null 2>&1 || ${oc_client} create ns "${RAPIDAST_NS}"
+        ${oc_client} adm policy add-scc-to-user privileged -z default -n "${RAPIDAST_NS}" || true
+        ${oc_client} adm policy add-scc-to-user anyuid -z default -n "${RAPIDAST_NS}" || true
 
         # 1 - Log helm version
         ocpopLogVerbose "$(helm version)"
@@ -141,25 +205,30 @@ rlJournalStart
         sed -i "s@'tag: \"latest\"'@'tag: \"2.8.0\"'@g" helm/chart/values.yaml || true
 
         # 6 - run rapidast on adapted configuration file (via helm)
-        # Ensure previous installation and leftover pods/jobs are removed before install
         rlLog "Cleaning previous rapidast installation (if any)."
-        helm uninstall rapidast || true
-        ${oc_client} delete pods -l app.kubernetes.io/instance=rapidast -n default --ignore-not-found || true
-        ${oc_client} delete job -l app.kubernetes.io/instance=rapidast -n default --ignore-not-found || true
-        ${oc_client} delete pvc -l app.kubernetes.io/instance=rapidast -n default --ignore-not-found || true
+        helm uninstall rapidast -n "${RAPIDAST_NS}" || true
+        ${oc_client} delete pods -l app.kubernetes.io/instance=rapidast -n "${RAPIDAST_NS}" --ignore-not-found || true
+        ${oc_client} delete job -l app.kubernetes.io/instance=rapidast -n "${RAPIDAST_NS}" --ignore-not-found || true
+        ${oc_client} delete pvc -l app.kubernetes.io/instance=rapidast -n "${RAPIDAST_NS}" --ignore-not-found || true
 
-        rlRun -c "helm install rapidast ./helm/chart/ --set-file rapidastConfig=${tmpdir}/tang_operator.yaml 2>/dev/null" 0 "Installing rapidast helm chart"
+        rlRun -c "helm install rapidast ./helm/chart/ \
+            --namespace ${RAPIDAST_NS} \
+            --create-namespace \
+            --set-file rapidastConfig=${tmpdir}/tang_operator.yaml 2>/dev/null" \
+            0 "Installing rapidast helm chart"
 
-        pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "default" "${TO_RAPIDAST}" 1)
+        pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "${RAPIDAST_NS}" "${TO_RAPIDAST}" 1)
         rlLog "Checking DAST pod status. Pod name: ${pod_name}"
-        if ! ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} default "${pod_name}" ; then
+        if ! ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} "${RAPIDAST_NS}" "${pod_name}" ; then
             rlLog "Pod ${pod_name} failed to reach 'Completed' state. Fetching logs for diagnosis."
-            rlRun "${oc_client} get pods -n default" || true
-            rlRun "${oc_client} logs \"${pod_name}\" -n default" || true
+            rlRun "${oc_client} describe pod \"${pod_name}\" -n ${RAPIDAST_NS}" || true
+            rlRun "${oc_client} get pods -n ${RAPIDAST_NS}" || true
+            rlRun "${oc_client} logs \"${pod_name}\" -n ${RAPIDAST_NS}" || true
+            rlRun "${oc_client} get events -n ${RAPIDAST_NS} --sort-by='.lastTimestamp' | tail -20" || true
             rlDie "DAST pod failed. Please review the logs above for the root cause."
         fi
 
-        # 7 - extract results with a retry loop (more retries & better diagnostics)
+        # 7 - extract results with a retry loop
         retry_count=0
         max_retries=10
         sleep_seconds=10
@@ -181,15 +250,12 @@ rlJournalStart
                 break
             fi
 
-            # if not found, gather diagnostics to help troubleshooting
             rlLogWarning "Report directory not found. Gathering diagnostics before retrying..."
-            rlRun "${oc_client} get pods -n default -o wide" || true
-            # check recent rapidast-job and rapiterm pods
-            rlRun "${oc_client} get pods -n default --selector=job-name,app.kubernetes.io/instance=rapidast -o name" || true
-            # try to fetch logs from the rapidast job pod and any rapiterm pods (if they exist)
-            for p in $(${oc_client} get pods -n default -o name | grep -E 'rapidast-job|rapiterm' || true); do
+            rlRun "${oc_client} get pods -n ${RAPIDAST_NS} -o wide" || true
+            rlRun "${oc_client} get pods -n ${RAPIDAST_NS} --selector=job-name,app.kubernetes.io/instance=rapidast -o name" || true
+            for p in $(${oc_client} get pods -n ${RAPIDAST_NS} -o name | grep -E 'rapidast-job|rapiterm' || true); do
                 rlLog "----- logs for pod ${p} -----"
-                rlRun "${oc_client} logs ${p#pod/} -n default || true"
+                rlRun "${oc_client} logs ${p#pod/} -n ${RAPIDAST_NS} || true"
             done
 
             rlLog "Sleeping ${sleep_seconds}s before next attempt..."
@@ -200,8 +266,8 @@ rlJournalStart
         # 8 - parse results
         ocpopLogVerbose "REPORT DIR:${report_dir}"
         if [ "$found_report" = false ]; then
-            rlRun "${oc_client} get pods -n default -o wide" || true
-            rlRun "${oc_client} get events -n default --sort-by='.lastTimestamp' | tail -20" || true
+            rlRun "${oc_client} get pods -n ${RAPIDAST_NS} -o wide" || true
+            rlRun "${oc_client} get events -n ${RAPIDAST_NS} --sort-by='.lastTimestamp' | tail -20" || true
             rlDie "Failed to find the DAST report directory after multiple retries."
         fi
 
@@ -229,9 +295,9 @@ rlJournalStart
 
         # 9 - clean helm installation
         rlLog "Cleaning up rapidast installation."
-        helm uninstall rapidast || true
-        ${oc_client} delete pods -l app.kubernetes.io/instance=rapidast -n default --ignore-not-found || true
-        ${oc_client} delete job -l app.kubernetes.io/instance=rapidast -n default --ignore-not-found || true
+        helm uninstall rapidast -n "${RAPIDAST_NS}" || true
+        ${oc_client} delete pods -l app.kubernetes.io/instance=rapidast -n "${RAPIDAST_NS}" --ignore-not-found || true
+        ${oc_client} delete job -l app.kubernetes.io/instance=rapidast -n "${RAPIDAST_NS}" --ignore-not-found || true
 
         popd || exit
         popd || exit
