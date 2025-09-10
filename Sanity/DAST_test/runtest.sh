@@ -36,39 +36,23 @@ ocpopGetAuth() {
     local oc_bin="${OC_CLIENT:-oc}"
     local -a oc_cmd=("${oc_bin}")
 
-    # --- helper: detect mounted service account token (ephemeral pods) ---
-    _find_sa_token() {
-        for candidate in \
-            "/var/run/secrets/kubernetes.io/serviceaccount/token" \
-            "/var/run/secrets/konflux.io/serviceaccount/token" \
-            "/var/run/secrets/kubernetes.io/serviceaccount/..data/token"
-        do
-            if [ -s "$candidate" ]; then
-                echo "$candidate"
-                return 0
-            fi
-        done
-        return 1
-    }
-
-    local token_file
-    token_file=$(_find_sa_token || true)
-
-    if [ -n "$token_file" ]; then
-        # 1. In-cluster (ephemeral / Konflux)
-        namespace=$(< /var/run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null || echo "default")
+    # --- Case 1: in-cluster SA token (true pod run) ---
+    if [ -s /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
+        namespace=$(< /var/run/secrets/kubernetes.io/serviceaccount/namespace)
         api_host_port="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
-        token=$(< "$token_file")
+        token=$(< /var/run/secrets/kubernetes.io/serviceaccount/token)
+        rlLog "Detected in-cluster pod (namespace=${namespace}, api=${api_host_port})."
 
-        rlLog "Detected in-cluster execution (namespace=${namespace})."
-        if [ -n "$token" ]; then
-            rlLog "Using mounted in-cluster SA token from ${token_file}."
-        else
-            rlLogWarning "Mounted SA token file exists but empty. Falling back to 'oc create token ${sa_name}'."
-            token=$(${oc_bin} -n "$namespace" create token "$sa_name" 2>/dev/null || true)
-        fi
+    # --- Case 2: ephemeral pipeline (Konflux) with KUBECONFIG under /credentials ---
+    elif [ -n "${KUBECONFIG}" ] && [[ "${KUBECONFIG}" == /credentials/* ]]; then
+        namespace=$(${oc_bin} config view --kubeconfig="${KUBECONFIG}" --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)
+        api_host_port=$(${oc_bin} config view --kubeconfig="${KUBECONFIG}" --minify -o jsonpath='{.clusters[0].cluster.server}')
+        rlLog "Detected ephemeral pipeline with kubeconfig (namespace=${namespace}, api=${api_host_port})."
+        oc_cmd+=("--kubeconfig=${KUBECONFIG}")
+        token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
+
+    # --- Case 3: external cluster (CRC / dev machine) ---
     else
-        # 2. External (CRC / dev machine)
         namespace="${OPERATOR_NAMESPACE:-$(${oc_bin} config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)}"
         api_host_port=$(${oc_bin} config view --minify -o jsonpath='{.clusters[0].cluster.server}')
         rlLog "Detected external cluster (namespace=${namespace}, api=${api_host_port})."
@@ -81,21 +65,22 @@ ocpopGetAuth() {
         if ! "${oc_cmd[@]}" whoami &>/dev/null; then
             rlDie "Cannot authenticate to the cluster using kubeconfig!"
         fi
-
         token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
-        if [ -z "$token" ]; then
-            rlLogWarning "Failed to get token with 'oc whoami -t'. Falling back to SA secret (legacy)."
-            local secret_name
-            secret_name=$("${oc_cmd[@]}" get sa "$sa_name" -n "$namespace" -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
-            if [ -n "$secret_name" ]; then
-                token=$("${oc_cmd[@]}" get secret -n "$namespace" "$secret_name" -o json | jq -Mr '.data.token' | base64 -d 2>/dev/null || true)
-            fi
+    fi
+
+    # --- Fallback if token is still empty ---
+    if [ -z "$token" ]; then
+        rlLogWarning "Primary auth method failed, falling back to SA secret."
+        local secret_name
+        secret_name=$("${oc_cmd[@]}" get sa "$sa_name" -n "$namespace" -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
+        if [ -n "$secret_name" ]; then
+            token=$("${oc_cmd[@]}" get secret -n "$namespace" "$secret_name" -o json | jq -Mr '.data.token' | base64 -d 2>/dev/null || true)
         fi
     fi
 
-    echo "API_HOST_PORT='${api_host_port}'"
-    echo "DEFAULT_TOKEN='${token}'"
-    echo "NAMESPACE='${namespace}'"
+    echo "API_HOST_PORT=${api_host_port}"
+    echo "DEFAULT_TOKEN=${token}"
+    echo "NAMESPACE=${namespace}"
 
     [ -z "$token" ] && rlDie "Failed to obtain an authentication token!"
 }
