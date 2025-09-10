@@ -35,7 +35,6 @@ ocpopGetAuth() {
     local namespace api_host_port token
     local oc_bin="${OC_CLIENT:-oc}"
 
-    # Dump diagnostics
     _auth_diag() {
         rlLog "=== AUTH DIAGNOSTICS ==="
         rlRun -c "env | egrep 'KUBERNETES_SERVICE_HOST|KUBECONFIG|KONFLUX|EXECUTION_MODE' || true"
@@ -50,7 +49,6 @@ ocpopGetAuth() {
         rlLog "========================="
     }
 
-    # 1. Prefer in-cluster SA token
     if [ -s "/var/run/secrets/kubernetes.io/serviceaccount/token" ]; then
         namespace=$(</var/run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null || echo "default")
         token=$(</var/run/secrets/kubernetes.io/serviceaccount/token)
@@ -58,7 +56,6 @@ ocpopGetAuth() {
         rlLog "Using in-cluster SA token (namespace=${namespace}, api=${api_host_port})"
     fi
 
-    # 2. If no token yet, try kubeconfig
     if [ -z "${token}" ]; then
         KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
         if ${oc_bin} --kubeconfig="$KUBECONFIG" whoami &>/dev/null; then
@@ -69,7 +66,6 @@ ocpopGetAuth() {
         fi
     fi
 
-    # 3. If still no token, try oc create token
     if [ -z "${token}" ]; then
         rlLogWarning "No token yet, trying 'oc create token' for SA ${sa_name}"
         token=$(${oc_bin} create token "${sa_name}" -n "${OPERATOR_NAMESPACE:-default}" 2>/dev/null || true)
@@ -80,7 +76,6 @@ ocpopGetAuth() {
         fi
     fi
 
-    # Final check
     rlLog "Token length: ${#token}"
     [ -z "$token" ] && { _auth_diag; rlDie "Failed to obtain authentication token!"; }
 
@@ -91,53 +86,85 @@ ocpopGetAuth() {
 # ---------------------------------------------------------------------
 
 rlJournalStart
-    rlPhaseStartSetup
-        OPERATOR_NAME="${OPERATOR_NAME:-tang-operator}"
+rlPhaseStartSetup
+    OPERATOR_NAME="${OPERATOR_NAME:-tang-operator}"
+    rlRun 'rlImport "common-cloud-orchestration/ocpop-lib"'
+    rlRun ". ../../TestHelpers/functions.sh"
 
-        rlRun 'rlImport "common-cloud-orchestration/ocpop-lib"'
-        rlRun ". ../../TestHelpers/functions.sh"
+    TO_DAST_POD_COMPLETED=300
+    TO_RAPIDAST=30
+rlPhaseEnd
 
-        TO_DAST_POD_COMPLETED=300
-        TO_RAPIDAST=30
-    rlPhaseEnd
+rlPhaseStartTest "Dynamic Application Security Testing"
+    oc_client="${OC_CLIENT:-oc}"
+    RAPIDAST_NS="rapidast-test"
 
-    rlPhaseStartTest "Dynamic Application Security Testing"
-        oc_client="${OC_CLIENT:-oc}"
-        RAPIDAST_NS="rapidast-test"
+    rlLog "Ensuring namespace ${RAPIDAST_NS} exists"
+    ${oc_client} get ns "${RAPIDAST_NS}" >/dev/null 2>&1 || ${oc_client} create ns "${RAPIDAST_NS}"
+    ${oc_client} adm policy add-scc-to-user privileged -z default -n "${RAPIDAST_NS}" || true
+    ${oc_client} adm policy add-scc-to-user anyuid -z default -n "${RAPIDAST_NS}" || true
 
-        rlLog "Ensuring namespace ${RAPIDAST_NS} exists"
-        ${oc_client} get ns "${RAPIDAST_NS}" >/dev/null 2>&1 || ${oc_client} create ns "${RAPIDAST_NS}"
-        ${oc_client} adm policy add-scc-to-user privileged -z default -n "${RAPIDAST_NS}" || true
-        ${oc_client} adm policy add-scc-to-user anyuid -z default -n "${RAPIDAST_NS}" || true
+    tmpdir=$(mktemp -d)
+    pushd "$tmpdir"
+    git clone https://github.com/RedHatProductSecurity/rapidast.git -b development
 
-        tmpdir=$(mktemp -d)
-        pushd "$tmpdir"
-        git clone https://github.com/RedHatProductSecurity/rapidast.git -b development
+    rlRun "curl -o tang_operator.yaml https://raw.githubusercontent.com/openshift/nbde-tang-server/main/tools/scan_tools/tang_operator_template.yaml"
 
-        rlRun "curl -o tang_operator.yaml https://raw.githubusercontent.com/openshift/nbde-tang-server/main/tools/scan_tools/tang_operator_template.yaml"
+    rlRun "eval \"\$(ocpopGetAuth)\"" 0 "Authentication process from function"
+    rlAssertNotEquals "Token must not be empty" "${DEFAULT_TOKEN}" ""
 
-        rlRun "eval "$(ocpopGetAuth)"" 0 "Authentication process from function"
-        rlAssertNotEquals "Token must not be empty" "${DEFAULT_TOKEN}" ""
+    tang_operator_svc_url=$(ocpopGetServiceIp "nbde-tang-server-service" "${OPERATOR_NAMESPACE}" 10)
+    rlAssertNotEquals "Tang operator service URL must not be empty" "${tang_operator_svc_url}" ""
 
-        tang_operator_svc_url=$(ocpopGetServiceIp "nbde-tang-server-service" "${OPERATOR_NAMESPACE}" 10)
-        rlAssertNotEquals "Tang operator service URL must not be empty" "${tang_operator_svc_url}" ""
+    sed -i "s@API_HOST_PORT_HERE@${tang_operator_svc_url}@g" tang_operator.yaml
+    sed -i "s@AUTH_TOKEN_HERE@${DEFAULT_TOKEN}@g" tang_operator.yaml
+    sed -i "s@OPERATOR_NAMESPACE_HERE@${OPERATOR_NAMESPACE}@g" tang_operator.yaml
 
-        sed -i "s@API_HOST_PORT_HERE@${tang_operator_svc_url}@g" tang_operator.yaml
-        sed -i "s@AUTH_TOKEN_HERE@${DEFAULT_TOKEN}@g" tang_operator.yaml
-        sed -i "s@OPERATOR_NAMESPACE_HERE@${OPERATOR_NAMESPACE}@g" tang_operator.yaml
+    pushd rapidast
+    sed -i "s@kubectl --kubeconfig=./kubeconfig @${oc_client} @g" helm/results.sh
+    helm uninstall rapidast -n "${RAPIDAST_NS}" || true
 
-        pushd rapidast
-        sed -i "s@kubectl --kubeconfig=./kubeconfig @${oc_client} @g" helm/results.sh
-        helm uninstall rapidast -n "${RAPIDAST_NS}" || true
+    rlRun -c "helm install rapidast ./helm/chart/ --namespace ${RAPIDAST_NS} --set-file rapidastConfig=${tmpdir}/tang_operator.yaml" 0 "Installing rapidast"
 
-        rlRun -c "helm install rapidast ./helm/chart/ --namespace ${RAPIDAST_NS} --set-file rapidastConfig=${tmpdir}/tang_operator.yaml" 0 "Installing rapidast"
+    pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "${RAPIDAST_NS}" "${TO_RAPIDAST}" 1)
+    rlAssertNotEquals "Pod name must not be empty" "${pod_name}" ""
 
-        pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "${RAPIDAST_NS}" "${TO_RAPIDAST}" 1)
-        rlAssertNotEquals "Pod name must not be empty" "${pod_name}" ""
+    ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} "${RAPIDAST_NS}" "${pod_name}" || rlDie "DAST pod failed"
 
-        ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} "${RAPIDAST_NS}" "${pod_name}" || rlDie "DAST pod failed"
+    # --- Run results.sh first ---
+    rlLog "Running results.sh to generate the DAST report..."
+    rlRun -c "bash ./helm/results.sh" 0 "Generating DAST report"
 
-        rlRun -c "bash ./helm/results.sh" 0 "Collecting results"
-    rlPhaseEnd
+    # --- Wait for report directory ---
+    report_base_dir="${tmpdir}/rapidast/tangservers/"
+    retry_count=0
+    max_retries=5
+    sleep_seconds=5
+    report_dir=""
+
+    while [ -z "$report_dir" ] && [ $retry_count -lt $max_retries ]; do
+        report_dir=$(find "${report_base_dir}" -maxdepth 1 -type d -name "DAST*tangservers" | head -1)
+        if [ -z "$report_dir" ]; then
+            rlLog "Report directory not found yet. Sleeping ${sleep_seconds}s..."
+            sleep $sleep_seconds
+            ((retry_count++))
+        fi
+    done
+
+    rlAssertNotEquals "Report directory must exist" "$report_dir"
+
+    report_file="${report_dir}/zap/zap-report.json"
+    [ -f "$report_file" ] || rlDie "DAST report file '${report_file}' does not exist"
+    rlLog "DAST report file is ready: ${report_file}"
+
+    # --- Optional: parse alerts ---
+    alerts=$(jq '.site[0].alerts | length' < "$report_file")
+    for ((alert=0; alert<alerts; alert++)); do
+        risk_desc=$(jq -r ".site[0].alerts[${alert}].riskdesc" < "$report_file")
+        rlLog "Alert[${alert}] -> Priority: ${risk_desc}"
+        rlAssertNotEquals "Check alarm is not High Risk" "${risk_desc}" "High"
+    done
+
+rlPhaseEnd
 rlJournalPrintText
 rlJournalEnd
