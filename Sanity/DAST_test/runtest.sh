@@ -31,21 +31,22 @@
 
 # --- AUTH HELPER -----------------------------------------------------
 ocpopGetAuth() {
+    local sa_name=${1:-dast-test-sa}
     local namespace
     local api_host_port
     local token
 
     declare -a oc_cmd=("${OC_CLIENT}")
 
-    # 1. In-cluster (ephemeral / Konflux)
-    if [ -f /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
+    # Use a reliable in-cluster check
+    if [ -f "/var/run/secrets/kubernetes.io/serviceaccount/token" ]; then
+        # In-cluster pod (ephemeral/Konflux)
         namespace=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
         api_host_port="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
         token=$(< /var/run/secrets/kubernetes.io/serviceaccount/token)
-        rlLog "Detected in-cluster execution (namespace=${namespace})."
-
-    # 2. External (CRC / dev machine)
+        rlLog "Detected in-cluster execution. Using existing token."
     else
+        # External cluster (CRC/dev machine)
         namespace="${OPERATOR_NAMESPACE:-$(${OC_CLIENT} config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)}"
         api_host_port=$(${OC_CLIENT} config view --minify -o jsonpath='{.clusters[0].cluster.server}')
         rlLog "Detected external cluster (namespace=${namespace}, api=${api_host_port})."
@@ -60,6 +61,14 @@ ocpopGetAuth() {
         fi
 
         token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
+        if [ -z "$token" ]; then
+            rlLogWarning "Failed to get token with 'oc whoami -t'. Falling back to SA secret (legacy)."
+            local secret_name
+            secret_name=$("${oc_cmd[@]}" get sa "$sa_name" -n "$namespace" -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
+            if [ -n "$secret_name" ]; then
+                token=$("${oc_cmd[@]}" get secret -n "$namespace" "$secret_name" -o json | jq -Mr '.data.token' | base64 -d 2>/dev/null || true)
+            fi
+        fi
     fi
 
     echo "API_HOST_PORT=${api_host_port}"
@@ -113,19 +122,27 @@ rlJournalStart
         rlLog "Execution mode is: ${EXECUTION_MODE}"
 
         # --- USE AUTH HELPER ---
-        # This section replaces all the manual authentication logic.
-        eval "$(ocpopGetAuth dast-test-sa)"
+        eval "$(ocpopGetAuth)"
         # -----------------------
 
         # Assert that the token is not empty. If it is, the test cannot proceed.
         rlAssertNotEquals "Checking token not empty" "${DEFAULT_TOKEN}" ""
 
+        # Dynamically get the Tang operator service URL
+        rlLog "Attempting to get the tang-operator service URL."
+        tang_operator_svc_url=$(ocpopGetServiceIp "nbde-tang-server-service" "${OPERATOR_NAMESPACE}" 10)
+        if [ $? -ne 0 ]; then
+            rlDie "Failed to find the URL/IP for the tang-operator service."
+        fi
+        rlLog "Found tang-operator service URL: ${tang_operator_svc_url}"
+        
         # Replace placeholders in YAML
         rlLog "Replacing placeholders in tang_operator.yaml with debug info."
-        rlLog "  API_HOST_PORT: ${API_HOST_PORT}"
+        rlLog "  API_HOST_PORT: ${tang_operator_svc_url}"
         rlLog "  AUTH_TOKEN: (token length: ${#DEFAULT_TOKEN})"
         rlLog "  OPERATOR_NAMESPACE: ${OPERATOR_NAMESPACE}"
-        sed -i s@API_HOST_PORT_HERE@"${API_HOST_PORT}"@g tang_operator.yaml
+        
+        sed -i "s@API_HOST_PORT_HERE@${tang_operator_svc_url}@g" tang_operator.yaml
         sed -i s@AUTH_TOKEN_HERE@"${DEFAULT_TOKEN}"@g tang_operator.yaml
         sed -i s@OPERATOR_NAMESPACE_HERE@"${OPERATOR_NAMESPACE}"@g tang_operator.yaml
 
@@ -148,9 +165,9 @@ rlJournalStart
         fi
         
         # 7 - extract results with a retry loop
-        local retry_count=0
-        local max_retries=3
-        local found_report=false
+        retry_count=0
+        max_retries=3
+        found_report=false
 
         while [ "$found_report" = false ] && [ $retry_count -lt $max_retries ]; do
             rlRun -c "bash ./helm/results.sh 2>/dev/null" 0 "Extracting DAST results (Attempt $((retry_count+1)))"
