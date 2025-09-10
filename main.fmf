@@ -5,5 +5,5 @@ require:
   - type: file
     pattern: /TestHelpers/.*
   - url: https://github.com/RedHat-SP-Security/common-cloud-orchestration
-    ref: ap_library_ip_adjustment
+    ref: main
     name: /ocpop-lib
