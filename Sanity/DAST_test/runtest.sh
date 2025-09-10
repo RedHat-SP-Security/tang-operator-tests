@@ -36,37 +36,41 @@ ocpopGetAuth() {
     local oc_bin="${OC_CLIENT:-oc}"
     local -a oc_cmd=("${oc_bin}")
 
-    _auth_diag() {
-        rlLog "=== AUTH DIAGNOSTICS ==="
-        rlRun -c "env | egrep 'KUBERNETES_SERVICE_HOST|KUBECONFIG|KONFLUX|EXECUTION_MODE' || true"
-        rlRun -c "ls -l /var/run/secrets/kubernetes.io/ || true"
-        rlRun -c "ls -l /var/run/secrets/kubernetes.io/serviceaccount || true"
-        rlRun -c "cat /var/run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null || true"
-        rlRun -c "test -s /var/run/secrets/kubernetes.io/serviceaccount/token && echo 'token file exists and non-empty' || echo 'no token file or empty'"
-        rlRun -c "${oc_bin} version --client || true"
-        rlRun -c "${oc_bin} whoami 2>/dev/null || true"
-        rlRun -c "${oc_bin} whoami -t 2>/dev/null || true"
-        rlRun -c "${oc_bin} config view --minify -o yaml 2>/dev/null || true"
-        rlLog "========================="
+    # --- helper: detect mounted service account token (ephemeral pods) ---
+    _find_sa_token() {
+        for candidate in \
+            "/var/run/secrets/kubernetes.io/serviceaccount/token" \
+            "/var/run/secrets/konflux.io/serviceaccount/token" \
+            "/var/run/secrets/kubernetes.io/serviceaccount/..data/token"
+        do
+            if [ -s "$candidate" ]; then
+                echo "$candidate"
+                return 0
+            fi
+        done
+        return 1
     }
 
-    # 1. In-cluster (ephemeral / Konflux)
-    if [ -f "/var/run/secrets/kubernetes.io/serviceaccount/token" ]; then
-        namespace=$(< /var/run/secrets/kubernetes.io/serviceaccount/namespace)
-        api_host_port="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
-        token=$(< /var/run/secrets/kubernetes.io/serviceaccount/token)
-        rlLog "Detected in-cluster execution (namespace=${namespace})."
+    local token_file
+    token_file=$(_find_sa_token || true)
 
+    if [ -n "$token_file" ]; then
+        # 1. In-cluster (ephemeral / Konflux)
+        namespace=$(< /var/run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null || echo "default")
+        api_host_port="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
+        token=$(< "$token_file")
+
+        rlLog "Detected in-cluster execution (namespace=${namespace})."
         if [ -n "$token" ]; then
-            rlLog "Using mounted in-cluster SA token."
+            rlLog "Using mounted in-cluster SA token from ${token_file}."
         else
-            rlLogWarning "Mounted SA token file is empty. Falling back to 'oc create token ${sa_name}'."
-            token=$(${OC_CLIENT} -n "$namespace" create token "$sa_name" 2>/dev/null || true)
+            rlLogWarning "Mounted SA token file exists but empty. Falling back to 'oc create token ${sa_name}'."
+            token=$(${oc_bin} -n "$namespace" create token "$sa_name" 2>/dev/null || true)
         fi
     else
         # 2. External (CRC / dev machine)
-        namespace="${OPERATOR_NAMESPACE:-$(${OC_CLIENT} config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)}"
-        api_host_port=$(${OC_CLIENT} config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+        namespace="${OPERATOR_NAMESPACE:-$(${oc_bin} config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)}"
+        api_host_port=$(${oc_bin} config view --minify -o jsonpath='{.clusters[0].cluster.server}')
         rlLog "Detected external cluster (namespace=${namespace}, api=${api_host_port})."
 
         if [ -z "${KUBECONFIG}" ]; then
@@ -92,6 +96,8 @@ ocpopGetAuth() {
     echo "API_HOST_PORT='${api_host_port}'"
     echo "DEFAULT_TOKEN='${token}'"
     echo "NAMESPACE='${namespace}'"
+
+    [ -z "$token" ] && rlDie "Failed to obtain an authentication token!"
 }
 # ---------------------------------------------------------------------
 
@@ -139,7 +145,13 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "${RAPIDAST_NS}" "${TO_RAPIDAST}" 1)
     rlAssertNotEquals "Pod name must not be empty" "${pod_name}" ""
 
-    ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} "${RAPIDAST_NS}" "${pod_name}" || rlDie "DAST pod failed"
+    # FIX: Add a check for pod status and print diagnostics if it fails
+    if ! ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} "${RAPIDAST_NS}" "${pod_name}" ; then
+        rlLog "DAST pod failed to reach 'Completed' state. Fetching diagnostic info..."
+        rlRun "oc describe pod ${pod_name} -n ${RAPIDAST_NS} || true"
+        rlRun "oc logs ${pod_name} -n ${RAPIDAST_NS} || true"
+        rlDie "DAST pod failed. Check the logs above for the root cause."
+    fi
 
     # --- Run results.sh first ---
     rlLog "Running results.sh to generate the DAST report..."
