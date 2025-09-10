@@ -31,68 +31,54 @@
 
 # --- AUTH HELPER -----------------------------------------------------
 ocpopGetAuth() {
-    local sa_name=${1:-dast-test-sa}
-    local namespace
-    local api_host_port
-    local token
+    local namespace api_host_port token
+    declare -a oc_cmd=("${OC_CLIENT:-oc}")
 
-    declare -a oc_cmd=("${OC_CLIENT}")
-
-    # Use a reliable in-cluster check
-    if [ -f "/var/run/secrets/kubernetes.io/serviceaccount/token" ]; then
-        # In-cluster pod (ephemeral/Konflux)
-        namespace=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+    # 1. In-cluster (Ephemeral / Konflux)
+    if [ -s "/var/run/secrets/kubernetes.io/serviceaccount/token" ]; then
+        namespace=$(< /var/run/secrets/kubernetes.io/serviceaccount/namespace)
         api_host_port="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
         token=$(< /var/run/secrets/kubernetes.io/serviceaccount/token)
-        rlLog "Detected in-cluster execution. Using existing token."
-    else
-        # External cluster (CRC/dev machine)
-        namespace="${OPERATOR_NAMESPACE:-$(${OC_CLIENT} config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)}"
-        api_host_port=$(${OC_CLIENT} config view --minify -o jsonpath='{.clusters[0].cluster.server}')
-        rlLog "Detected external cluster (namespace=${namespace}, api=${api_host_port})."
+        rlLog "Detected in-cluster execution (namespace=${namespace}, api=${api_host_port})."
 
-        if [ -z "${KUBECONFIG}" ]; then
-            KUBECONFIG="${HOME}/.kube/config"
-        fi
-        oc_cmd+=("--kubeconfig=${KUBECONFIG}")
+    # 2. External (CRC / dev machine)
+    else
+        namespace="${OPERATOR_NAMESPACE:-$(${oc_cmd[@]} config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)}"
+        api_host_port=$(${oc_cmd[@]} config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+        rlLog "Detected external cluster (namespace=${namespace}, api=${api_host_port})."
 
         if ! "${oc_cmd[@]}" whoami &>/dev/null; then
             rlDie "Cannot authenticate to the cluster using kubeconfig!"
         fi
 
         token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
-        if [ -z "$token" ]; then
-            rlLogWarning "Failed to get token with 'oc whoami -t'. Falling back to SA secret (legacy)."
-            local secret_name
-            secret_name=$("${oc_cmd[@]}" get sa "$sa_name" -n "$namespace" -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
-            if [ -n "$secret_name" ]; then
-                token=$("${oc_cmd[@]}" get secret -n "$namespace" "$secret_name" -o json | jq -Mr '.data.token' | base64 -d 2>/dev/null || true)
-            fi
-        fi
     fi
 
     echo "API_HOST_PORT=${api_host_port}"
     echo "DEFAULT_TOKEN=${token}"
     echo "NAMESPACE=${namespace}"
 
+    rlLog "Token length: ${#token}"
     [ -z "$token" ] && rlDie "Failed to obtain an authentication token!"
 }
 # ---------------------------------------------------------------------
 
 rlJournalStart
     rlPhaseStartSetup
-        if [ -z "${OPERATOR_NAME}" ];
-        then
+        if [ -z "${OPERATOR_NAME}" ]; then
             OPERATOR_NAME=tang-operator
         fi
+
         rlRun 'rlImport "common-cloud-orchestration/ocpop-lib"' || rlDie "cannot import ocpop lib"
         rlRun ". ../../TestHelpers/functions.sh" || rlDie "cannot import function script"
-        TO_DAST_POD_COMPLETED=300 #seconds (DAST lasts around 120 seconds)
-        TO_RAPIDAST=30 #seconds to wait for Rapidast container to appear
+
+        TO_DAST_POD_COMPLETED=300 # seconds (DAST lasts ~120s)
+        TO_RAPIDAST=30 # seconds to wait for Rapidast container to appear
+
         if ! command -v helm &> /dev/null; then
             ARCH=$(case $(uname -m) in x86_64) echo -n amd64 ;; aarch64) echo -n arm64 ;; *) echo -n "$(uname -m)" ;; esac)
             OS=$(uname | awk '{print tolower($0)}')
-            #download latest helm
+            # download latest helm
             LATEST_RELEASE_TAG=$(curl -s https://api.github.com/repos/helm/helm/releases/latest | jq -r '.tag_name')
             RELEASE_URL="https://get.helm.sh/helm-${LATEST_RELEASE_TAG}-${OS}-${ARCH}.tar.gz"
             TAR_FILE="helm-${LATEST_RELEASE_TAG}-${OS}-${ARCH}.tar.gz"
@@ -104,6 +90,9 @@ rlJournalStart
 
     ############# DAST TESTS ##############
     rlPhaseStartTest "Dynamic Application Security Testing"
+        # local oc client fallback
+        oc_client="${OC_CLIENT:-oc}"
+
         # 1 - Log helm version
         ocpopLogVerbose "$(helm version)"
 
@@ -112,8 +101,7 @@ rlJournalStart
         pushd "${tmpdir}" && git clone https://github.com/RedHatProductSecurity/rapidast.git -b development || exit
 
         # 3 - download configuration file template
-        if [ -z "${KONFLUX}" ];
-        then
+        if [ -z "${KONFLUX}" ]; then
             rlRun "curl -o tang_operator.yaml https://raw.githubusercontent.com/latchset/tang-operator/main/tools/scan_tools/tang_operator_template.yaml"
         else
             rlRun "curl -o tang_operator.yaml https://raw.githubusercontent.com/openshift/nbde-tang-server/main/tools/scan_tools/tang_operator_template.yaml"
@@ -125,7 +113,7 @@ rlJournalStart
         eval "$(ocpopGetAuth)"
         # -----------------------
 
-        # Assert that the token is not empty. If it is, the test cannot proceed.
+        # Assert token not empty
         rlAssertNotEquals "Checking token not empty" "${DEFAULT_TOKEN}" ""
 
         # Dynamically get the Tang operator service URL
@@ -135,62 +123,85 @@ rlJournalStart
             rlDie "Failed to find the URL/IP for the tang-operator service."
         fi
         rlLog "Found tang-operator service URL: ${tang_operator_svc_url}"
-        
+
         # Replace placeholders in YAML
         rlLog "Replacing placeholders in tang_operator.yaml with debug info."
         rlLog "  API_HOST_PORT: ${tang_operator_svc_url}"
         rlLog "  AUTH_TOKEN: (token length: ${#DEFAULT_TOKEN})"
         rlLog "  OPERATOR_NAMESPACE: ${OPERATOR_NAMESPACE}"
-        
+
         sed -i "s@API_HOST_PORT_HERE@${tang_operator_svc_url}@g" tang_operator.yaml
-        sed -i s@AUTH_TOKEN_HERE@"${DEFAULT_TOKEN}"@g tang_operator.yaml
-        sed -i s@OPERATOR_NAMESPACE_HERE@"${OPERATOR_NAMESPACE}"@g tang_operator.yaml
+        sed -i "s@AUTH_TOKEN_HERE@${DEFAULT_TOKEN}@g" tang_operator.yaml
+        sed -i "s@OPERATOR_NAMESPACE_HERE@${OPERATOR_NAMESPACE}@g" tang_operator.yaml
 
         # 5 - adapt helm
         pushd rapidast || exit
-        sed -i s@"kubectl --kubeconfig=./kubeconfig "@"${OC_CLIENT} "@g helm/results.sh
-        sed -i s@"secContext: '{}'"@"secContext: '{\"privileged\": true}'"@ helm/chart/values.yaml
-        sed -i s@'tag: "latest"'@'tag: "2.8.0"'@g helm/chart/values.yaml
+        sed -i "s@kubectl --kubeconfig=./kubeconfig @${OC_CLIENT} @g" helm/results.sh
+        sed -i "s@secContext: '{}'@secContext: '{\"privileged\": true}'@g" helm/chart/values.yaml
+        sed -i "s@'tag: \"latest\"'@'tag: \"2.8.0\"'@g" helm/chart/values.yaml || true
 
         # 6 - run rapidast on adapted configuration file (via helm)
-        helm uninstall rapidast
-        rlRun -c "helm install rapidast ./helm/chart/ --set-file rapidastConfig=${tmpdir}/tang_operator.yaml 2>/dev/null" 0 "Installing rapidast helm chart"
-        pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "default" "${TO_RAPIDAST}" 1)
+        # Ensure previous installation and leftover pods/jobs are removed before install
+        rlLog "Cleaning previous rapidast installation (if any)."
+        helm uninstall rapidast || true
+        ${oc_client} delete pods -l app.kubernetes.io/instance=rapidast -n default --ignore-not-found || true
+        ${oc_client} delete job -l app.kubernetes.io/instance=rapidast -n default --ignore-not-found || true
+        ${oc_client} delete pvc -l app.kubernetes.io/instance=rapidast -n default --ignore-not-found || true
 
+        rlRun -c "helm install rapidast ./helm/chart/ --set-file rapidastConfig=${tmpdir}/tang_operator.yaml 2>/dev/null" 0 "Installing rapidast helm chart"
+
+        pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "default" "${TO_RAPIDAST}" 1)
         rlLog "Checking DAST pod status. Pod name: ${pod_name}"
         if ! ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} default "${pod_name}" ; then
             rlLog "Pod ${pod_name} failed to reach 'Completed' state. Fetching logs for diagnosis."
-            rlRun "oc logs \"${pod_name}\""
+            rlRun "${oc_client} get pods -n default" || true
+            rlRun "${oc_client} logs \"${pod_name}\" -n default" || true
             rlDie "DAST pod failed. Please review the logs above for the root cause."
         fi
-        
-        # 7 - extract results with a retry loop
+
+        # 7 - extract results with a retry loop (more retries & better diagnostics)
         retry_count=0
-        max_retries=3
+        max_retries=10
+        sleep_seconds=10
         found_report=false
 
         while [ "$found_report" = false ] && [ $retry_count -lt $max_retries ]; do
-            rlRun -c "bash ./helm/results.sh 2>/dev/null" 0 "Extracting DAST results (Attempt $((retry_count+1)))"
-            
+            rlLog "Extracting DAST results (Attempt $((retry_count+1))/${max_retries})..."
+            rlRun -c "bash ./helm/results.sh 2>/dev/null" 0 "Running results.sh (Attempt $((retry_count+1)))"
+
             report_base_dir="${tmpdir}/rapidast/tangservers/"
             report_dir=""
             if [ -d "${report_base_dir}" ]; then
                 report_dir=$(find "${report_base_dir}" -maxdepth 1 -type d -name "DAST*tangservers" | head -1)
             fi
-            
+
             if [ -n "${report_dir}" ]; then
                 ocpopLogVerbose "Report directory found: ${report_dir}"
                 found_report=true
-            else
-                rlLogWarning "Report directory not found. Retrying in 5 seconds... (Attempt $((retry_count+1)))"
-                sleep 5
+                break
             fi
+
+            # if not found, gather diagnostics to help troubleshooting
+            rlLogWarning "Report directory not found. Gathering diagnostics before retrying..."
+            rlRun "${oc_client} get pods -n default -o wide" || true
+            # check recent rapidast-job and rapiterm pods
+            rlRun "${oc_client} get pods -n default --selector=job-name,app.kubernetes.io/instance=rapidast -o name" || true
+            # try to fetch logs from the rapidast job pod and any rapiterm pods (if they exist)
+            for p in $(${oc_client} get pods -n default -o name | grep -E 'rapidast-job|rapiterm' || true); do
+                rlLog "----- logs for pod ${p} -----"
+                rlRun "${oc_client} logs ${p#pod/} -n default || true"
+            done
+
+            rlLog "Sleeping ${sleep_seconds}s before next attempt..."
+            sleep ${sleep_seconds}
             ((retry_count++))
         done
 
         # 8 - parse results
         ocpopLogVerbose "REPORT DIR:${report_dir}"
         if [ "$found_report" = false ]; then
+            rlRun "${oc_client} get pods -n default -o wide" || true
+            rlRun "${oc_client} get events -n default --sort-by='.lastTimestamp' | tail -20" || true
             rlDie "Failed to find the DAST report directory after multiple retries."
         fi
 
@@ -217,7 +228,10 @@ rlJournalStart
         done
 
         # 9 - clean helm installation
-        helm uninstall rapidast
+        rlLog "Cleaning up rapidast installation."
+        helm uninstall rapidast || true
+        ${oc_client} delete pods -l app.kubernetes.io/instance=rapidast -n default --ignore-not-found || true
+        ${oc_client} delete job -l app.kubernetes.io/instance=rapidast -n default --ignore-not-found || true
 
         popd || exit
         popd || exit
