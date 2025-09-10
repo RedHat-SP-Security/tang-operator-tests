@@ -34,6 +34,7 @@ ocpopGetAuth() {
     local sa_name=${1:-dast-test-sa}
     local namespace api_host_port token
     local oc_bin="${OC_CLIENT:-oc}"
+    local -a oc_cmd=("${oc_bin}")
 
     _auth_diag() {
         rlLog "=== AUTH DIAGNOSTICS ==="
@@ -49,43 +50,43 @@ ocpopGetAuth() {
         rlLog "========================="
     }
 
-    # 1. Try in-cluster SA token (CRC / Konflux ephemeral SA)
-    if [ -s "/var/run/secrets/kubernetes.io/serviceaccount/token" ]; then
-        namespace=$(</var/run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null || echo "default")
-        token=$(</var/run/secrets/kubernetes.io/serviceaccount/token)
+    # 1. In-cluster (ephemeral / Konflux)
+    if [ -f "/var/run/secrets/kubernetes.io/serviceaccount/token" ]; then
+        namespace=$(< /var/run/secrets/kubernetes.io/serviceaccount/namespace)
         api_host_port="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
+        token=$(< /var/run/secrets/kubernetes.io/serviceaccount/token)
+        rlLog "Detected in-cluster execution (namespace=${namespace})."
+
         if [ -n "$token" ]; then
-            rlLog "Using in-cluster SA token (namespace=${namespace}, api=${api_host_port})"
+            rlLog "Using mounted in-cluster SA token."
+        else
+            rlLogWarning "Mounted SA token file is empty. Falling back to 'oc create token ${sa_name}'."
+            token=$(${OC_CLIENT} -n "$namespace" create token "$sa_name" 2>/dev/null || true)
         fi
-    fi
+    else
+        # 2. External (CRC / dev machine)
+        namespace="${OPERATOR_NAMESPACE:-$(${OC_CLIENT} config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)}"
+        api_host_port=$(${OC_CLIENT} config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+        rlLog "Detected external cluster (namespace=${namespace}, api=${api_host_port})."
 
-    # 2. Try oc create token (needed for ephemeral clusters if SA token empty)
-    if [ -z "${token}" ]; then
-        rlLog "Attempting to create token for SA '${sa_name}'"
-        namespace=${namespace:-openshift-operators}
-        token=$(${oc_bin} -n "${namespace}" create token "${sa_name}" 2>/dev/null || true)
-        api_host_port=$(${oc_bin} config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || echo "")
-        if [ -n "$token" ]; then
-            rlLog "Using oc create token (namespace=${namespace}, api=${api_host_port})"
+        if [ -z "${KUBECONFIG}" ]; then
+            KUBECONFIG="${HOME}/.kube/config"
         fi
-    fi
+        oc_cmd+=("--kubeconfig=${KUBECONFIG}")
 
-    # 3. Try kubeconfig token (local/dev runs)
-    if [ -z "${token}" ]; then
-        KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
-        if ${oc_bin} --kubeconfig="$KUBECONFIG" whoami &>/dev/null; then
-            token=$(${oc_bin} --kubeconfig="$KUBECONFIG" whoami -t 2>/dev/null || true)
-            namespace=$(${oc_bin} --kubeconfig="$KUBECONFIG" config view --minify -o jsonpath='{.contexts[0].context.namespace}' 2>/dev/null || echo "default")
-            api_host_port=$(${oc_bin} --kubeconfig="$KUBECONFIG" config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || echo "")
-            rlLog "Using KUBECONFIG token (namespace=${namespace}, api=${api_host_port})"
+        if ! "${oc_cmd[@]}" whoami &>/dev/null; then
+            rlDie "Cannot authenticate to the cluster using kubeconfig!"
         fi
-    fi
 
-    # Final check
-    if [ -z "${token}" ]; then
-        rlLogWarning "All authentication methods failed"
-        _auth_diag
-        rlDie "Failed to obtain authentication token!"
+        token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
+        if [ -z "$token" ]; then
+            rlLogWarning "Failed to get token with 'oc whoami -t'. Falling back to SA secret (legacy)."
+            local secret_name
+            secret_name=$("${oc_cmd[@]}" get sa "$sa_name" -n "$namespace" -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
+            if [ -n "$secret_name" ]; then
+                token=$("${oc_cmd[@]}" get secret -n "$namespace" "$secret_name" -o json | jq -Mr '.data.token' | base64 -d 2>/dev/null || true)
+            fi
+        fi
     fi
 
     echo "API_HOST_PORT='${api_host_port}'"
