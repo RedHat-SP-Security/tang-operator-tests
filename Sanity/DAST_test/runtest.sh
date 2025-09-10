@@ -49,6 +49,7 @@ ocpopGetAuth() {
         rlLog "========================="
     }
 
+    # --- 1. In-cluster SA token (CRC / local cluster) ---
     if [ -s "/var/run/secrets/kubernetes.io/serviceaccount/token" ]; then
         namespace=$(</var/run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null || echo "default")
         token=$(</var/run/secrets/kubernetes.io/serviceaccount/token)
@@ -56,32 +57,28 @@ ocpopGetAuth() {
         rlLog "Using in-cluster SA token (namespace=${namespace}, api=${api_host_port})"
     fi
 
+    # --- 2. KUBECONFIG token (ephemeral pipeline) ---
     if [ -z "${token}" ]; then
         KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
         if ${oc_bin} --kubeconfig="$KUBECONFIG" whoami &>/dev/null; then
             token=$(${oc_bin} --kubeconfig="$KUBECONFIG" whoami -t 2>/dev/null || true)
-            namespace="${OPERATOR_NAMESPACE:-$(${oc_bin} --kubeconfig="$KUBECONFIG" config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)}"
+            namespace=$(${oc_bin} --kubeconfig="$KUBECONFIG" config view --minify -o jsonpath='{.contexts[0].context.namespace}' 2>/dev/null || echo "default")
             api_host_port=$(${oc_bin} --kubeconfig="$KUBECONFIG" config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || echo "")
-            rlLog "Using kubeconfig token (namespace=${namespace}, api=${api_host_port})"
+            rlLog "Using KUBECONFIG token (namespace=${namespace}, api=${api_host_port})"
         fi
     fi
 
+    # --- 3. Fallback (optional, only if needed) ---
     if [ -z "${token}" ]; then
-        rlLogWarning "No token yet, trying 'oc create token' for SA ${sa_name}"
-        token=$(${oc_bin} create token "${sa_name}" -n "${OPERATOR_NAMESPACE:-default}" 2>/dev/null || true)
-        if [ -n "$token" ]; then
-            namespace="${OPERATOR_NAMESPACE:-default}"
-            api_host_port=$(${oc_bin} config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || echo "")
-            rlLog "Obtained token via oc create token (namespace=${namespace}, api=${api_host_port})"
-        fi
+        rlLogWarning "Token not found; skipping 'oc create token' (may fail on ephemeral clusters)"
+        _auth_diag
+        rlDie "Failed to obtain authentication token!"
     fi
 
-    rlLog "Token length: ${#token}"
-    [ -z "$token" ] && { _auth_diag; rlDie "Failed to obtain authentication token!"; }
-
-    echo "API_HOST_PORT=${api_host_port}"
-    echo "DEFAULT_TOKEN=${token}"
-    echo "NAMESPACE=${namespace}"
+    # Output valid shell assignments
+    echo "API_HOST_PORT='${api_host_port}'"
+    echo "DEFAULT_TOKEN='${token}'"
+    echo "NAMESPACE='${namespace}'"
 }
 # ---------------------------------------------------------------------
 
