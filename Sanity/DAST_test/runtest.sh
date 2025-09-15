@@ -96,6 +96,11 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     rlLog "Default token: ${DEFAULT_TOKEN:-<empty>}"
     rlLog "Operator namespace: ${OPERATOR_NAMESPACE}"
 
+    # Always fetch the latest template
+    curl -sSfL -o tang_operator.yaml \
+        https://raw.githubusercontent.com/openshift/nbde-tang-server/main/tools/scan_tools/tang_operator_template.yaml \
+        || rlDie "Failed to fetch tang_operator.yaml template"
+
     # Replace placeholders in tang_operator.yaml
     sed -i "s@API_HOST_PORT_HERE@${API_HOST_PORT}@g" tang_operator.yaml
     sed -i "s@AUTH_TOKEN_HERE@'${DEFAULT_TOKEN}'@g" tang_operator.yaml
