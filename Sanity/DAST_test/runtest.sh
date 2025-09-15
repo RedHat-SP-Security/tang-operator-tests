@@ -159,6 +159,12 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     sed -i "s@kubectl --kubeconfig=./kubeconfig @${oc_client} @g" helm/results.sh
     helm uninstall rapidast -n "${RAPIDAST_NS}" || true
 
+    # --- Ensure results volume is writable on CRC ---
+    if [ "${is_crc}" -eq 1 ]; then
+        rlLog "Applying writable emptyDir for results on CRC"
+        sed -i 's|results-volume:|results-volume:\n  emptyDir: {}|' helm/chart/templates/volumes.yaml || true
+    fi
+
     rlRun -c "helm install rapidast ./helm/chart/ --namespace ${RAPIDAST_NS} --set-file rapidastConfig=${tmpdir}/tang_operator.yaml" 0 "Installing rapidast"
 
     pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "${RAPIDAST_NS}" "${TO_RAPIDAST}" 1)
@@ -170,21 +176,22 @@ rlPhaseStartTest "Dynamic Application Security Testing"
         pod_logs_output=$(oc logs ${pod_name} -n ${RAPIDAST_NS} 2>/dev/null || true)
         rlLog "$pod_logs_output"
 
+        # If CRC, fix permissions and retry logs
         if [ "${is_crc}" -eq 1 ] && echo "${pod_logs_output}" | grep -qi "Permission denied"; then
-            rlLogWarning "Detected Rapidast permission denied writing to results on CRC."
-            rlPass "Skipping DAST failure on CRC due to permission denied"
-        else
-            rlRun "oc logs ${pod_name} -n ${RAPIDAST_NS} || true" 0 "Pod logs for failure analysis"
-            rlDie "DAST pod failed. Check logs above."
+            rlLog "Fixing permissions on results directory"
+            oc exec -n "${RAPIDAST_NS}" "${pod_name}" -- chmod -R 777 /opt/rapidast/results || true
+            rlLog "Waiting a few seconds for pod to retry writing..."
+            sleep 5
+            pod_logs_output=$(oc logs ${pod_name} -n ${RAPIDAST_NS} 2>/dev/null || true)
+            rlLog "$pod_logs_output"
         fi
+
+        rlRun "oc logs ${pod_name} -n ${RAPIDAST_NS} || true" 0 "Pod logs for failure analysis"
+        rlDie "DAST pod failed. Check logs above."
     fi
 
     rlLog "Running results.sh to generate the DAST report..."
-    if ! rlRun -c "bash ./helm/results.sh" 0 "Generating DAST report"; then
-        results_logs=$(find . -maxdepth 2 -type f -name '*.log' -o -name '*.txt' -print 2>/dev/null || true)
-        rlLog "results.sh failed. Found files: ${results_logs}"
-        rlDie "Generating DAST report failed."
-    fi
+    rlRun -c "bash ./helm/results.sh" 0 "Generating DAST report"
 
     report_base_dir="${tmpdir}/rapidast/tangservers/"
     retry_count=0
@@ -214,6 +221,3 @@ rlPhaseStartTest "Dynamic Application Security Testing"
         rlAssertNotEquals "Check alarm is not High Risk" "${risk_desc}" "High"
     done
 rlPhaseEnd
-
-rlJournalPrintText
-rlJournalEnd
