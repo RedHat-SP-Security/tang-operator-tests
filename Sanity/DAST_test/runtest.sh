@@ -32,38 +32,27 @@ if [ -z "${BEAKERLIB_INCLUDED:-}" ]; then
     BEAKERLIB_INCLUDED=1
 fi
 
-# --- AUTH HELPER -----------------------------------------------------
+# --- AUTH HELPER ---
 ocpopGetAuth() {
     local sa_name=${1:-dast-test-sa}
     local namespace api_host_port token
     local oc_bin="${OC_CLIENT:-oc}"
     local -a oc_cmd=("${oc_bin}")
 
-    # --- In-cluster SA token ---
     if [ -s /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
         namespace=$(< /var/run/secrets/kubernetes.io/serviceaccount/namespace)
         api_host_port="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
         token=$(< /var/run/secrets/kubernetes.io/serviceaccount/token)
         rlLog "Detected in-cluster pod (namespace=${namespace}, api=${api_host_port})." >&2
 
-    # --- Ephemeral pipeline kubeconfig ---
     elif [ -n "${KUBECONFIG}" ] && [[ "${KUBECONFIG}" == /credentials/* ]]; then
         namespace=$(${oc_bin} config view --kubeconfig="${KUBECONFIG}" --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)
         api_host_port=$(${oc_bin} config view --kubeconfig="${KUBECONFIG}" --minify -o jsonpath='{.clusters[0].cluster.server}')
         rlLog "Detected ephemeral pipeline with kubeconfig (namespace=${namespace}, api=${api_host_port})." >&2
         oc_cmd+=("--kubeconfig=${KUBECONFIG}")
         token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
+        [ -z "$token" ] && DEFAULT_TOKEN="" 
 
-        if [ -z "$token" ]; then
-            rlLogWarning "No token in KUBECONFIG; will use kubeconfig directly for auth" >&2
-            DEFAULT_TOKEN=""  # explicitly empty
-            echo "API_HOST_PORT=${api_host_port}"
-            echo "DEFAULT_TOKEN=${DEFAULT_TOKEN}"
-            echo "NAMESPACE=${namespace}"
-            return 0
-        fi
-
-    # --- External cluster (CRC/dev) ---
     else
         namespace="${OPERATOR_NAMESPACE:-$(${oc_bin} config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)}"
         api_host_port=$(${oc_bin} config view --minify -o jsonpath='{.clusters[0].cluster.server}')
@@ -72,31 +61,26 @@ ocpopGetAuth() {
         token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
     fi
 
-    # --- Fallback to SA secret ---
     if [ -z "$token" ]; then
-        rlLogWarning "Primary auth method failed, falling back to SA secret." >&2
+        rlLogWarning "Primary auth failed; trying SA secret." >&2
         local secret_name
         secret_name=$("${oc_cmd[@]}" get sa "$sa_name" -n "$namespace" -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
-        if [ -n "$secret_name" ]; then
-            token=$("${oc_cmd[@]}" get secret -n "$namespace" "$secret_name" -o json | jq -Mr '.data.token' | base64 -d 2>/dev/null || true)
-        fi
+        [ -n "$secret_name" ] && token=$("${oc_cmd[@]}" get secret -n "$namespace" "$secret_name" -o json | jq -Mr '.data.token' | base64 -d 2>/dev/null || true)
     fi
 
     echo "API_HOST_PORT=${api_host_port}"
     echo "DEFAULT_TOKEN=${token}"
     echo "NAMESPACE=${namespace}"
-
     return 0
 }
-# ---------------------------------------------------------------------
 
+# --- MAIN TEST ---
 rlJournalStart
 
 rlPhaseStartSetup
     OPERATOR_NAME="${OPERATOR_NAME:-tang-operator}"
     rlRun 'rlImport "common-cloud-orchestration/ocpop-lib"'
     rlRun ". ../../TestHelpers/functions.sh"
-
     TO_DAST_POD_COMPLETED=300
     TO_RAPIDAST=30
 rlPhaseEnd
@@ -105,7 +89,6 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     oc_client="${OC_CLIENT:-oc}"
     RAPIDAST_NS="rapidast-test"
 
-    rlLog "Ensuring namespace ${RAPIDAST_NS} exists"
     ${oc_client} get ns "${RAPIDAST_NS}" >/dev/null 2>&1 || ${oc_client} create ns "${RAPIDAST_NS}"
     ${oc_client} adm policy add-scc-to-user privileged -z default -n "${RAPIDAST_NS}" || true
     ${oc_client} adm policy add-scc-to-user anyuid -z default -n "${RAPIDAST_NS}" || true
@@ -113,25 +96,19 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     tmpdir=$(mktemp -d)
     pushd "$tmpdir"
     git clone https://github.com/RedHatProductSecurity/rapidast.git -b development
-
     rlRun "curl -o tang_operator.yaml https://raw.githubusercontent.com/openshift/nbde-tang-server/main/tools/scan_tools/tang_operator_template.yaml"
 
-    # --- eval auth ---
     if ! eval "$(ocpopGetAuth)"; then
         rlLogWarning "Authentication failed; skipping DAST test"
         rlSkip "Cannot obtain authentication to cluster"
     fi
-
     oc_client+=" --kubeconfig=${KUBECONFIG:-$HOME/.kube/config}"
 
     cluster_api_host="${API_HOST_PORT:-$(${oc_client} whoami --show-server 2>/dev/null || echo)}"
     is_crc=0
-    if echo "${cluster_api_host}" | grep -qi 'crc.testing'; then
-        is_crc=1
-    fi
+    [[ "$cluster_api_host" =~ crc.testing ]] && is_crc=1
 
     # --- Ensure Tang operator service exists ---
-    oc apply -f tang_operator.yaml
     tang_operator_svc_url=$(ocpopGetServiceIp "nbde-tang-server-service" "${OPERATOR_NAMESPACE}" 10)
     rlAssertNotEquals "Tang operator service URL must not be empty" "${tang_operator_svc_url}" ""
 
@@ -139,6 +116,11 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     sed -i "s@API_HOST_PORT_HERE@${tang_operator_svc_url}@g" tang_operator.yaml
     sed -i "s@AUTH_TOKEN_HERE@\"${DEFAULT_TOKEN}\"@g" tang_operator.yaml
     sed -i "s@OPERATOR_NAMESPACE_HERE@${OPERATOR_NAMESPACE}@g" tang_operator.yaml
+
+    # --- Sanity check: no placeholders left ---
+    if grep -q "API_HOST_PORT_HERE\|AUTH_TOKEN_HERE\|OPERATOR_NAMESPACE_HERE" tang_operator.yaml; then
+        rlDie "tang_operator.yaml still contains placeholders"
+    fi
 
     pushd rapidast
     sed -i "s@kubectl --kubeconfig=./kubeconfig @${oc_client} @g" helm/results.sh
@@ -152,7 +134,7 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     rlRun -c "helm install rapidast ./helm/chart/ --namespace ${RAPIDAST_NS} --set-file rapidastConfig=${tmpdir}/tang_operator.yaml" 0 "Installing rapidast"
 
     pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "${RAPIDAST_NS}" "${TO_RAPIDAST}" 1)
-    rlAssertNotEquals "Pod name must not be empty" "${pod_name}" ""
+    rlAssertNotEquals "Pod name must not be empty" "${pod_name}"
 
     if ! ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} "${RAPIDAST_NS}" "${pod_name}" ; then
         rlLog "DAST pod failed to reach 'Completed' state. Fetching diagnostic info..."
@@ -183,15 +165,10 @@ rlPhaseStartTest "Dynamic Application Security Testing"
 
     while [ -z "$report_dir" ] && [ $retry_count -lt $max_retries ]; do
         report_dir=$(find "${report_base_dir}" -maxdepth 1 -type d -name "DAST*tangservers" | head -1)
-        if [ -z "$report_dir" ]; then
-            rlLog "Report directory not found yet. Sleeping ${sleep_seconds}s..."
-            sleep $sleep_seconds
-            ((retry_count++))
-        fi
+        [ -z "$report_dir" ] && sleep $sleep_seconds && ((retry_count++))
     done
 
     rlAssertNotEquals "Report directory must exist" "$report_dir"
-
     report_file="${report_dir}/zap/zap-report.json"
     [ -f "$report_file" ] || rlDie "DAST report file '${report_file}' does not exist"
     rlLog "DAST report file is ready: ${report_file}"
