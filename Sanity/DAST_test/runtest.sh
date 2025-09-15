@@ -86,89 +86,55 @@ rlPhaseStartSetup
 rlPhaseEnd
 
 rlPhaseStartTest "Dynamic Application Security Testing"
-    oc_client="${OC_CLIENT:-oc}"
-    RAPIDAST_NS="rapidast-test"
 
-    ${oc_client} get ns "${RAPIDAST_NS}" >/dev/null 2>&1 || ${oc_client} create ns "${RAPIDAST_NS}"
-    ${oc_client} adm policy add-scc-to-user privileged -z default -n "${RAPIDAST_NS}" || true
-    ${oc_client} adm policy add-scc-to-user anyuid -z default -n "${RAPIDAST_NS}" || true
+    rlLog "Preparing Rapidast configuration..."
 
-    tmpdir=$(mktemp -d)
-    pushd "$tmpdir"
-    git clone https://github.com/RedHatProductSecurity/rapidast.git -b development
-    rlRun "curl -o tang_operator.yaml https://raw.githubusercontent.com/openshift/nbde-tang-server/main/tools/scan_tools/tang_operator_template.yaml"
+    # Gather cluster auth info
+    eval "$(ocpopGetAuth "${KUBECONFIG}" "${OPERATOR_NAMESPACE}")"
 
-    if ! eval "$(ocpopGetAuth)"; then
-        rlLogWarning "Authentication failed; skipping DAST test"
-        rlSkip "Cannot obtain authentication to cluster"
-    fi
-    oc_client+=" --kubeconfig=${KUBECONFIG:-$HOME/.kube/config}"
+    rlLog "API host/port: ${API_HOST_PORT}"
+    rlLog "Default token: ${DEFAULT_TOKEN:-<empty>}"
+    rlLog "Operator namespace: ${OPERATOR_NAMESPACE}"
 
-    cluster_api_host="${API_HOST_PORT:-$(${oc_client} whoami --show-server 2>/dev/null || echo)}"
-    is_crc=0
-    [[ "$cluster_api_host" =~ crc.testing ]] && is_crc=1
-
-    # --- Ensure Tang operator service exists ---
-    tang_operator_svc_url=$(ocpopGetServiceIp "nbde-tang-server-service" "${OPERATOR_NAMESPACE}" 10)
-    rlAssertNotEquals "Tang operator service URL must not be empty" "${tang_operator_svc_url}" ""
-
-    # --- Replace placeholders in tang_operator.yaml ---
-    sed -i "s@API_HOST_PORT_HERE@${tang_operator_svc_url}@g" tang_operator.yaml
-    sed -i "s@AUTH_TOKEN_HERE@\"${DEFAULT_TOKEN}\"@g" tang_operator.yaml
+    # Replace placeholders in tang_operator.yaml
+    sed -i "s@API_HOST_PORT_HERE@${API_HOST_PORT}@g" tang_operator.yaml
+    sed -i "s@AUTH_TOKEN_HERE@'${DEFAULT_TOKEN}'@g" tang_operator.yaml
     sed -i "s@OPERATOR_NAMESPACE_HERE@${OPERATOR_NAMESPACE}@g" tang_operator.yaml
 
-    # --- Sanity check: no placeholders left ---
+    # Sanity check: make sure no placeholders remain
     if grep -q "API_HOST_PORT_HERE\|AUTH_TOKEN_HERE\|OPERATOR_NAMESPACE_HERE" tang_operator.yaml; then
-        rlDie "tang_operator.yaml still contains placeholders"
+        rlDie "tang_operator.yaml still contains unreplaced placeholders"
     fi
 
-    pushd rapidast
-    sed -i "s@kubectl --kubeconfig=./kubeconfig @${oc_client} @g" helm/results.sh
-    helm uninstall rapidast -n "${RAPIDAST_NS}" || true
+    # Validate YAML before helm
+    python3 -c "import yaml,sys;yaml.safe_load(open('tang_operator.yaml'))" \
+        || rlDie "tang_operator.yaml is not valid YAML"
 
-    if [ "${is_crc}" -eq 1 ]; then
-        rlLog "Applying writable emptyDir for results on CRC"
-        sed -i 's|results-volume:|results-volume:\n  emptyDir: {}|' helm/chart/templates/volumes.yaml || true
-    fi
+    rlLog "Deploying Rapidast via Helm..."
+    helm install rapidast rapidast/helm \
+        --namespace "${RAPIDAST_NS}" \
+        --set-file rapidastConfig=./tang_operator.yaml
 
-    rlRun -c "helm install rapidast ./helm/chart/ --namespace ${RAPIDAST_NS} --set-file rapidastConfig=${tmpdir}/tang_operator.yaml" 0 "Installing rapidast"
-
-    pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "${RAPIDAST_NS}" "${TO_RAPIDAST}" 1)
-    rlAssertNotEquals "Pod name must not be empty" "${pod_name}"
-
-    if ! ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} "${RAPIDAST_NS}" "${pod_name}" ; then
-        rlLog "DAST pod failed to reach 'Completed' state. Fetching diagnostic info..."
-        rlRun "oc describe pod ${pod_name} -n ${RAPIDAST_NS} || true" 0 "Describe pod"
-        pod_logs_output=$(oc logs ${pod_name} -n ${RAPIDAST_NS} 2>/dev/null || true)
-        rlLog "$pod_logs_output"
-
-        if [ "${is_crc}" -eq 1 ] && echo "${pod_logs_output}" | grep -qi "Permission denied"; then
-            rlLog "Fixing permissions on results directory"
-            oc exec -n "${RAPIDAST_NS}" "${pod_name}" -- chmod -R 777 /opt/rapidast/results || true
-            sleep 5
-            pod_logs_output=$(oc logs ${pod_name} -n ${RAPIDAST_NS} 2>/dev/null || true)
-            rlLog "$pod_logs_output"
-        fi
-
-        rlRun "oc logs ${pod_name} -n ${RAPIDAST_NS} || true" 0 "Pod logs for failure analysis"
-        rlDie "DAST pod failed. Check logs above."
-    fi
-
-    rlLog "Running results.sh to generate the DAST report..."
-    rlRun -c "bash ./helm/results.sh" 0 "Generating DAST report"
-
-    report_base_dir="${tmpdir}/rapidast/tangservers/"
+    # Wait for report
+    sleep_seconds=10
+    max_retries=60
     retry_count=0
-    max_retries=5
-    sleep_seconds=5
     report_dir=""
-
-    while [ -z "$report_dir" ] && [ $retry_count -lt $max_retries ]; do
-        report_dir=$(find "${report_base_dir}" -maxdepth 1 -type d -name "DAST*tangservers" | head -1)
-        [ -z "$report_dir" ] && sleep $sleep_seconds && ((retry_count++))
+    while [ $retry_count -lt $max_retries ]; do
+        report_dir=$(${oc_client} get cm -n "${RAPIDAST_NS}" \
+            -o custom-columns=":metadata.name" \
+            | grep "dast-rapidast-tangservers" | head -1)
+        if [ -z "$report_dir" ]; then
+            rlLog "Report directory not found yet. Sleeping ${sleep_seconds}s..."
+            sleep $sleep_seconds
+            ((retry_count++))
+        else
+            break
+        fi
     done
 
     rlAssertNotEquals "Report directory must exist" "$report_dir"
+
     report_file="${report_dir}/zap/zap-report.json"
     [ -f "$report_file" ] || rlDie "DAST report file '${report_file}' does not exist"
     rlLog "DAST report file is ready: ${report_file}"
@@ -179,4 +145,5 @@ rlPhaseStartTest "Dynamic Application Security Testing"
         rlLog "Alert[${alert}] -> Priority: ${risk_desc}"
         rlAssertNotEquals "Check alarm is not High Risk" "${risk_desc}" "High"
     done
+
 rlPhaseEnd
