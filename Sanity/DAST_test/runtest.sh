@@ -34,21 +34,19 @@ fi
 
 # --- AUTH HELPER -----------------------------------------------------
 ocpopGetAuth() {
-    # Safe to eval: prints KEY=VALUE assignments to stdout, logs go to stderr
-
     local sa_name=${1:-dast-test-sa}
     local namespace api_host_port token
     local oc_bin="${OC_CLIENT:-oc}"
     local -a oc_cmd=("${oc_bin}")
 
-    # --- Case 1: in-cluster SA token ---
+    # --- In-cluster SA token ---
     if [ -s /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
         namespace=$(< /var/run/secrets/kubernetes.io/serviceaccount/namespace)
         api_host_port="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
         token=$(< /var/run/secrets/kubernetes.io/serviceaccount/token)
         rlLog "Detected in-cluster pod (namespace=${namespace}, api=${api_host_port})." >&2
 
-    # --- Case 2: ephemeral pipeline (KUBECONFIG under /credentials) ---
+    # --- Ephemeral pipeline kubeconfig ---
     elif [ -n "${KUBECONFIG}" ] && [[ "${KUBECONFIG}" == /credentials/* ]]; then
         namespace=$(${oc_bin} config view --kubeconfig="${KUBECONFIG}" --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)
         api_host_port=$(${oc_bin} config view --kubeconfig="${KUBECONFIG}" --minify -o jsonpath='{.clusters[0].cluster.server}')
@@ -56,7 +54,6 @@ ocpopGetAuth() {
         oc_cmd+=("--kubeconfig=${KUBECONFIG}")
         token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
 
-        # Fallback if token empty (certificate-only kubeconfig)
         if [ -z "$token" ]; then
             rlLogWarning "No token in KUBECONFIG; will use kubeconfig directly for auth" >&2
             DEFAULT_TOKEN=""  # explicitly empty
@@ -66,25 +63,16 @@ ocpopGetAuth() {
             return 0
         fi
 
-    # --- Case 3: external cluster (CRC / dev machine) ---
+    # --- External cluster (CRC/dev) ---
     else
         namespace="${OPERATOR_NAMESPACE:-$(${oc_bin} config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)}"
         api_host_port=$(${oc_bin} config view --minify -o jsonpath='{.clusters[0].cluster.server}')
         rlLog "Detected external cluster (namespace=${namespace}, api=${api_host_port})." >&2
-
-        if [ -z "${KUBECONFIG}" ]; then
-            KUBECONFIG="${HOME}/.kube/config"
-        fi
-        oc_cmd+=("--kubeconfig=${KUBECONFIG}")
-
-        if ! "${oc_cmd[@]}" whoami &>/dev/null; then
-            rlLogWarning "Cannot authenticate to the cluster using kubeconfig!" >&2
-            return 1
-        fi
+        oc_cmd+=("--kubeconfig=${KUBECONFIG:-${HOME}/.kube/config}")
         token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
     fi
 
-    # --- Fallback if token is still empty ---
+    # --- Fallback to SA secret ---
     if [ -z "$token" ]; then
         rlLogWarning "Primary auth method failed, falling back to SA secret." >&2
         local secret_name
@@ -98,9 +86,6 @@ ocpopGetAuth() {
     echo "DEFAULT_TOKEN=${token}"
     echo "NAMESPACE=${namespace}"
 
-    if [ -z "$token" ]; then
-        return 0  # proceed without token for ephemeral kubeconfigs
-    fi
     return 0
 }
 # ---------------------------------------------------------------------
@@ -137,29 +122,28 @@ rlPhaseStartTest "Dynamic Application Security Testing"
         rlSkip "Cannot obtain authentication to cluster"
     fi
 
+    oc_client+=" --kubeconfig=${KUBECONFIG:-$HOME/.kube/config}"
+
     cluster_api_host="${API_HOST_PORT:-$(${oc_client} whoami --show-server 2>/dev/null || echo)}"
     is_crc=0
     if echo "${cluster_api_host}" | grep -qi 'crc.testing'; then
         is_crc=1
     fi
 
+    # --- Ensure Tang operator service exists ---
+    oc apply -f tang_operator.yaml
     tang_operator_svc_url=$(ocpopGetServiceIp "nbde-tang-server-service" "${OPERATOR_NAMESPACE}" 10)
     rlAssertNotEquals "Tang operator service URL must not be empty" "${tang_operator_svc_url}" ""
 
     # --- Replace placeholders in tang_operator.yaml ---
     sed -i "s@API_HOST_PORT_HERE@${tang_operator_svc_url}@g" tang_operator.yaml
-    if [ -n "${DEFAULT_TOKEN}" ]; then
-        sed -i "s@AUTH_TOKEN_HERE@${DEFAULT_TOKEN}@g" tang_operator.yaml
-    else
-        rlLog "Skipping AUTH_TOKEN_HERE replacement because token is empty"
-    fi
+    sed -i "s@AUTH_TOKEN_HERE@\"${DEFAULT_TOKEN}\"@g" tang_operator.yaml
     sed -i "s@OPERATOR_NAMESPACE_HERE@${OPERATOR_NAMESPACE}@g" tang_operator.yaml
 
     pushd rapidast
     sed -i "s@kubectl --kubeconfig=./kubeconfig @${oc_client} @g" helm/results.sh
     helm uninstall rapidast -n "${RAPIDAST_NS}" || true
 
-    # --- Ensure results volume is writable on CRC ---
     if [ "${is_crc}" -eq 1 ]; then
         rlLog "Applying writable emptyDir for results on CRC"
         sed -i 's|results-volume:|results-volume:\n  emptyDir: {}|' helm/chart/templates/volumes.yaml || true
@@ -176,11 +160,9 @@ rlPhaseStartTest "Dynamic Application Security Testing"
         pod_logs_output=$(oc logs ${pod_name} -n ${RAPIDAST_NS} 2>/dev/null || true)
         rlLog "$pod_logs_output"
 
-        # If CRC, fix permissions and retry logs
         if [ "${is_crc}" -eq 1 ] && echo "${pod_logs_output}" | grep -qi "Permission denied"; then
             rlLog "Fixing permissions on results directory"
             oc exec -n "${RAPIDAST_NS}" "${pod_name}" -- chmod -R 777 /opt/rapidast/results || true
-            rlLog "Waiting a few seconds for pod to retry writing..."
             sleep 5
             pod_logs_output=$(oc logs ${pod_name} -n ${RAPIDAST_NS} 2>/dev/null || true)
             rlLog "$pod_logs_output"
