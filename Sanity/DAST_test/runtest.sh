@@ -37,6 +37,7 @@ ocpopGetAuth() {
     # This helper is deliberately **safe to eval**:
     # - it prints only KEY=VALUE assignments to stdout (for eval)
     # - any rlLog / diagnostic output goes to stderr so it doesn't pollute eval
+
     local sa_name=${1:-dast-test-sa}
     local namespace api_host_port token
     local oc_bin="${OC_CLIENT:-oc}"
@@ -47,7 +48,6 @@ ocpopGetAuth() {
         namespace=$(< /var/run/secrets/kubernetes.io/serviceaccount/namespace)
         api_host_port="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
         token=$(< /var/run/secrets/kubernetes.io/serviceaccount/token)
-        # diagnostics to stderr
         rlLog "Detected in-cluster pod (namespace=${namespace}, api=${api_host_port})." >&2
 
     # --- Case 2: ephemeral pipeline (Konflux) with KUBECONFIG under /credentials ---
@@ -69,7 +69,6 @@ ocpopGetAuth() {
         fi
         oc_cmd+=("--kubeconfig=${KUBECONFIG}")
 
-        # Instead of rlDie here, return non-zero so caller can handle auth failure gracefully.
         if ! "${oc_cmd[@]}" whoami &>/dev/null; then
             rlLogWarning "Cannot authenticate to the cluster using kubeconfig!" >&2
             return 1
@@ -87,12 +86,10 @@ ocpopGetAuth() {
         fi
     fi
 
-    # Print exactly these assignments on stdout so eval can pick them up.
     echo "API_HOST_PORT=${api_host_port}"
     echo "DEFAULT_TOKEN=${token}"
     echo "NAMESPACE=${namespace}"
 
-    # Return non-zero if token missing so caller can decide how to behave.
     if [ -z "$token" ]; then
         return 1
     fi
@@ -101,6 +98,7 @@ ocpopGetAuth() {
 # ---------------------------------------------------------------------
 
 rlJournalStart
+
 rlPhaseStartSetup
     OPERATOR_NAME="${OPERATOR_NAME:-tang-operator}"
     rlRun 'rlImport "common-cloud-orchestration/ocpop-lib"'
@@ -125,16 +123,13 @@ rlPhaseStartTest "Dynamic Application Security Testing"
 
     rlRun "curl -o tang_operator.yaml https://raw.githubusercontent.com/openshift/nbde-tang-server/main/tools/scan_tools/tang_operator_template.yaml"
 
-    # eval the auth helper; if it fails, abort from the main flow (safe for beakerlib)
     if ! eval "$(ocpopGetAuth)"; then
-        rlLogWarning "Authentication helper reported failure. Attempting fallback or aborting." 
-        # We tried fallback inside ocpopGetAuth; if still empty, fail here explicitly.
+        rlLogWarning "Authentication helper reported failure. Attempting fallback or aborting."
         rlDie "Failed to obtain an authentication token!"
     fi
 
     rlAssertNotEquals "Token must not be empty" "${DEFAULT_TOKEN}" ""
 
-    # Detect whether server looks like CRC (we'll use this to special-case a known Rapidast PVC permission problem)
     cluster_api_host="${API_HOST_PORT:-$(${oc_client} whoami --show-server 2>/dev/null || echo)}"
     is_crc=0
     if echo "${cluster_api_host}" | grep -qi 'crc.testing'; then
@@ -157,38 +152,28 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "${RAPIDAST_NS}" "${TO_RAPIDAST}" 1)
     rlAssertNotEquals "Pod name must not be empty" "${pod_name}" ""
 
-    # Check pod completion; if it fails, gather diagnostics and decide behavior by cluster type.
     if ! ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} "${RAPIDAST_NS}" "${pod_name}" ; then
         rlLog "DAST pod failed to reach 'Completed' state. Fetching diagnostic info..."
         rlRun "oc describe pod ${pod_name} -n ${RAPIDAST_NS} || true" 0 "Describe pod"
-        pod_logs_output=""
         pod_logs_output=$(oc logs ${pod_name} -n ${RAPIDAST_NS} 2>/dev/null || true)
-        rlLog "$pod_logs_output" 
+        rlLog "$pod_logs_output"
 
-        # Detect known CRC permission issue from pod logs
         if [ "${is_crc}" -eq 1 ] && echo "${pod_logs_output}" | grep -qi "Permission denied"; then
             rlLogWarning "Detected Rapidast permission denied writing to results on CRC. This is a known environment limitation."
-            # Soft-pass on CRC: we cannot fix the container's PVC permissions from the test reliably.
             rlPass "Skipping DAST failure on CRC due to permission denied in Rapidast container"
         else
-            # Not a known/handled issue - fail loudly with logs attached
             rlRun "oc logs ${pod_name} -n ${RAPIDAST_NS} || true" 0 "Pod logs for failure analysis"
             rlDie "DAST pod failed. Check the logs above for the root cause."
         fi
     fi
 
-    # If pod finished OK, generate report. If results.sh fails, handle gracefully (CRC may still have permission problems)
     rlLog "Running results.sh to generate the DAST report..."
     if ! rlRun -c "bash ./helm/results.sh" 0 "Generating DAST report"; then
-        # results.sh failed. Grab any logs we can and decide.
         results_logs=$(find . -maxdepth 2 -type f -name '*.log' -o -name '*.txt' -print 2>/dev/null || true)
-        rlLog "results.sh failed. Found files: ${results_logs}" 
-        # If CRC and the pod logs showed permission denied earlier, treat as soft-pass above already.
-        # Here treat remaining failures as fatal.
+        rlLog "results.sh failed. Found files: ${results_logs}"
         rlDie "Generating DAST report failed (results.sh)."
     fi
 
-    # --- Wait for report directory ---
     report_base_dir="${tmpdir}/rapidast/tangservers/"
     retry_count=0
     max_retries=5
@@ -210,14 +195,13 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     [ -f "$report_file" ] || rlDie "DAST report file '${report_file}' does not exist"
     rlLog "DAST report file is ready: ${report_file}"
 
-    # --- Optional: parse alerts ---
     alerts=$(jq '.site[0].alerts | length' < "$report_file")
     for ((alert=0; alert<alerts; alert++)); do
         risk_desc=$(jq -r ".site[0].alerts[${alert}].riskdesc" < "$report_file")
         rlLog "Alert[${alert}] -> Priority: ${risk_desc}"
         rlAssertNotEquals "Check alarm is not High Risk" "${risk_desc}" "High"
     done
-
 rlPhaseEnd
+
 rlJournalPrintText
 rlJournalEnd
