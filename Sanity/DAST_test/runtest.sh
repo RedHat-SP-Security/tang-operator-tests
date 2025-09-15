@@ -51,7 +51,7 @@ ocpopGetAuth() {
         rlLog "Detected ephemeral pipeline with kubeconfig (namespace=${namespace}, api=${api_host_port})." >&2
         oc_cmd+=("--kubeconfig=${KUBECONFIG}")
         token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
-        [ -z "$token" ] && DEFAULT_TOKEN="" 
+        [ -z "$token" ] && DEFAULT_TOKEN=""
 
     else
         namespace="${OPERATOR_NAMESPACE:-$(${oc_bin} config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)}"
@@ -79,6 +79,7 @@ rlJournalStart
 
 rlPhaseStartSetup
     OPERATOR_NAME="${OPERATOR_NAME:-tang-operator}"
+    RAPIDAST_NS="rapidast-test"
     rlRun 'rlImport "common-cloud-orchestration/ocpop-lib"'
     rlRun ". ../../TestHelpers/functions.sh"
     TO_DAST_POD_COMPLETED=300
@@ -111,30 +112,45 @@ rlPhaseStartTest "Dynamic Application Security Testing"
         rlDie "tang_operator.yaml still contains unreplaced placeholders"
     fi
 
-    # Validate YAML before helm
-    python3 -c "import yaml,sys;yaml.safe_load(open('tang_operator.yaml'))" \
-        || rlDie "tang_operator.yaml is not valid YAML"
+    rlLog "Cloning Rapidast repo and deploying via Helm..."
+    tmpdir=$(mktemp -d)
+    pushd "${tmpdir}"
+    rlRun "git clone https://github.com/RedHatProductSecurity/rapidast.git -b development"
+    pushd rapidast
 
-    rlLog "Deploying Rapidast via Helm..."
-    helm install rapidast rapidast/helm \
-        --namespace "${RAPIDAST_NS}" \
-        --set-file rapidastConfig=./tang_operator.yaml
+    : "${oc_client:=oc}"
 
-    # Wait for report
-    sleep_seconds=10
-    max_retries=60
+    # Install Rapidast Helm chart locally
+    rlRun -c "helm install rapidast ./helm/chart/ \
+        --namespace \"${RAPIDAST_NS}\" \
+        --create-namespace \
+        --set-file rapidastConfig=${OLDPWD}/tang_operator.yaml" \
+        0 "Installing rapidast helm chart"
+
+    pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "${RAPIDAST_NS}" "${TO_RAPIDAST}" 1)
+    rlAssertNotEquals "Rapidast pod must not be empty" "${pod_name}" ""
+
+    if ! ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} "${RAPIDAST_NS}" "${pod_name}" ; then
+        rlRun "oc describe pod ${pod_name} -n ${RAPIDAST_NS} || true" 0 "Describe failed pod"
+        rlRun "oc logs ${pod_name} -n ${RAPIDAST_NS} || true" 0 "Logs of failed pod"
+        rlDie "DAST pod failed. See logs above."
+    fi
+
+    rlLog "Running results.sh to generate the DAST report..."
+    rlRun -c "bash ./helm/results.sh" 0 "Generating DAST report"
+
+    report_base_dir="${tmpdir}/rapidast/tangservers/"
     retry_count=0
+    max_retries=5
+    sleep_seconds=5
     report_dir=""
-    while [ $retry_count -lt $max_retries ]; do
-        report_dir=$(${oc_client} get cm -n "${RAPIDAST_NS}" \
-            -o custom-columns=":metadata.name" \
-            | grep "dast-rapidast-tangservers" | head -1)
+
+    while [ -z "$report_dir" ] && [ $retry_count -lt $max_retries ]; do
+        report_dir=$(find "${report_base_dir}" -maxdepth 1 -type d -name "DAST*tangservers" | head -1)
         if [ -z "$report_dir" ]; then
             rlLog "Report directory not found yet. Sleeping ${sleep_seconds}s..."
             sleep $sleep_seconds
             ((retry_count++))
-        else
-            break
         fi
     done
 
