@@ -82,7 +82,11 @@ ocpopGetAuth() {
     echo "DEFAULT_TOKEN=${token}"
     echo "NAMESPACE=${namespace}"
 
-    [ -z "$token" ] && rlDie "Failed to obtain an authentication token!"
+    if [ -z "$token" ]; then
+        # Do not rlDie here — return non-zero so callers (which may eval) can handle it.
+        return 1
+    fi
+    return 0
 }
 # ---------------------------------------------------------------------
 
@@ -111,7 +115,11 @@ rlPhaseStartTest "Dynamic Application Security Testing"
 
     rlRun "curl -o tang_operator.yaml https://raw.githubusercontent.com/openshift/nbde-tang-server/main/tools/scan_tools/tang_operator_template.yaml"
 
-    rlRun "eval \"\$(ocpopGetAuth)\"" 0 "Authentication process from function"
+    if ! eval "$(ocpopGetAuth)"; then
+        rlLogWarning "Primary auth method failed, falling back to SA secret (or aborting)."
+        rlDie "Failed to obtain an authentication token!"
+    fi
+
     rlAssertNotEquals "Token must not be empty" "${DEFAULT_TOKEN}" ""
 
     tang_operator_svc_url=$(ocpopGetServiceIp "nbde-tang-server-service" "${OPERATOR_NAMESPACE}" 10)
