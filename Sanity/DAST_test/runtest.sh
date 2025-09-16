@@ -56,7 +56,7 @@ ocpopGetAuth() {
         namespace=$("${oc_cmd[@]}" config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)
         rlLog "Ephemeral kubeconfig reports: api=${api_host_port:-<none>}, ns=${namespace}"
 
-        for try in 1 2 3 4 5; do
+        for try in {1..5}; do
             token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
             rlLog "whoami -t attempt ${try}, token length=${#token}"
             [ -n "$token" ] && break
@@ -69,23 +69,18 @@ ocpopGetAuth() {
                 user=$(head -n1 /credentials/*-username 2>/dev/null || echo "admin")
                 pass=$(< /credentials/*-password)
                 rlLog "Attempting oc login with username/password (user=${user})"
-                for try in 1 2 3; do
-                    rlRun "${oc_bin} login -u ${user} -p '${pass}' --server='${api_host_port}' --kubeconfig='${KUBECONFIG}'" 0-255 "oc login attempt ${try} (ephemeral creds)" || true
-                    token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
-                    rlLog "Post-login whoami -t attempt ${try}, token length=${#token}"
-                    [ -n "$token" ] && break
-                    sleep 2
-                done
+                rlRun "${oc_bin} login -u ${user} -p '${pass}' --server='${api_host_port}' --kubeconfig='${KUBECONFIG}'" 0-255 "oc login (ephemeral creds)" || true
+                token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
             elif [ -n "${OCP_TOKEN}" ]; then
                 rlLog "Attempting oc login with provided OCP_TOKEN"
-                rlRun "${oc_bin} login --token='${OCP_TOKEN}' --server='${api_host_port}' --kubeconfig='${KUBECONFIG}'" 0-255 "oc login with OCP_TOKEN" || true
+                rlRun "${oc_bin} login --token='${OCP_TOKEN}' --server='${api_host_port}' --kubeconfig='${KUBECONFIG}'" 0-255 "oc login (OCP_TOKEN)" || true
                 token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
             fi
         fi
 
     elif [ -s /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
         namespace=$(< /var/run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null || echo default)
-        api_host_port="https://${KUBERNETES_SERVICE_HOST:-<unknown>}:${KUBERNETES_SERVICE_PORT:-<unknown>}"
+        api_host_port="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
         token=$(< /var/run/secrets/kubernetes.io/serviceaccount/token 2>/dev/null || true)
         rlLog "Detected in-cluster environment (service account). namespace=${namespace}"
     else
@@ -95,25 +90,12 @@ ocpopGetAuth() {
         token=$("${oc_bin}" whoami -t 2>/dev/null || true)
         if [ -z "${token}" ] && [ -n "${OCP_TOKEN}" ]; then
             rlLog "No local token; attempting login with OCP_TOKEN"
-            rlRun "${oc_bin} login --token='${OCP_TOKEN}' --server='${api_host_port}'" 0-255 "oc login with OCP_TOKEN (external env)" || true
+            rlRun "${oc_bin} login --token='${OCP_TOKEN}' --server='${api_host_port}'" 0-255 "oc login (external env)" || true
             token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
         fi
     fi
 
     if [ -z "$token" ]; then
-        rlLogWarning "Primary auth failed; trying SA secret fallback (sa=${sa_name}, ns=${namespace})"
-        local secret_name
-        secret_name=$("${oc_cmd[@]}" get sa "${sa_name}" -n "${namespace}" -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
-        rlLog "Found SA secret name: ${secret_name:-<none>}"
-        if [ -n "${secret_name}" ]; then
-            token=$("${oc_cmd[@]}" get secret -n "${namespace}" "${secret_name}" -o json 2>/dev/null \
-                | jq -r '.data.token' 2>/dev/null | base64 -d 2>/dev/null || true)
-            rlLog "Retrieved token from SA secret, length=${#token}"
-        fi
-    fi
-
-    if [ -z "$token" ]; then
-        rlLogWarning "Failed to retrieve token via all methods"
         rlDie "Failed to retrieve token."
         return 1
     fi
@@ -123,13 +105,6 @@ ocpopGetAuth() {
     echo "DEFAULT_TOKEN=${token}"
     echo "NAMESPACE=${namespace:-default}"
     return 0
-}
-
-ocpop_sed_inplace() {
-    local find="$1"
-    local replace="$2"
-    local file="$3"
-    perl -0777 -pe "s/$find/$replace/gms" -i -- "${file}"
 }
 
 # --- MAIN TEST ----------------------------------------------------------------
@@ -187,10 +162,10 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     rlAssertNotEquals "API_HOST_PORT must not be empty" "${API_HOST_PORT}" ""
     rlAssertNotEquals "DEFAULT_TOKEN must not be empty" "${DEFAULT_TOKEN}" ""
 
-    # Replace placeholders in YAML
-    ocpop_sed_inplace 'API_HOST_PORT_HERE' "${API_HOST_PORT}" tang_operator.yaml
-    ocpop_sed_inplace 'AUTH_TOKEN_HERE' "${DEFAULT_TOKEN}" tang_operator.yaml
-    ocpop_sed_inplace 'OPERATOR_NAMESPACE_HERE' "${OPERATOR_NS}" tang_operator.yaml
+    # Replace placeholders in YAML (using sed directly)
+    sed -i s@API_HOST_PORT_HERE@"${API_HOST_PORT}"@g tang_operator.yaml
+    sed -i s@AUTH_TOKEN_HERE@"${DEFAULT_TOKEN}"@g tang_operator.yaml
+    sed -i s@OPERATOR_NAMESPACE_HERE@"${OPERATOR_NS}"@g tang_operator.yaml
     grep -q "HERE" tang_operator.yaml && rlDie "Template placeholders not replaced!"
 
     # 5 - adapt helm chart
