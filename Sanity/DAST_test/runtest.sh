@@ -38,10 +38,10 @@ ocpopGetAuth() {
     local oc_bin="${OC_CLIENT:-oc}"
     local -a oc_cmd=("${oc_bin}")
 
-    echo "===== DEBUG: Starting ocpopGetAuth ====="
-    echo "OC_CLIENT=${OC_CLIENT:-<unset>}"
-    echo "KUBECONFIG=${KUBECONFIG:-<unset>}"
-    echo "OCP_TOKEN=${OCP_TOKEN:-<unset>}"
+    rlLogVerbose "===== DEBUG: Starting ocpopGetAuth ====="
+    rlLogVerbose "OC_CLIENT=${OC_CLIENT:-<unset>}"
+    rlLogVerbose "KUBECONFIG=${KUBECONFIG:-<unset>}"
+    rlLogVerbose "OCP_TOKEN=${OCP_TOKEN:-<unset>}"
 
     # --- Case 1: CRC pod ---
     if [ -s /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
@@ -53,37 +53,33 @@ ocpopGetAuth() {
 
     # --- Case 2: Ephemeral pipeline ---
     elif [ -n "${KUBECONFIG}" ] && [[ "${KUBECONFIG}" == /credentials/* ]]; then
-        echo "===== DEBUG: Ephemeral pipeline detected ====="
-        echo "KUBECONFIG file exists: $( [ -f "${KUBECONFIG}" ] && echo yes || echo no )"
-        echo "Listing /credentials:"
-        ls -la /credentials || true
+        rlLogVerbose "===== DEBUG: Ephemeral pipeline detected ====="
+        rlLogVerbose "KUBECONFIG exists: $( [ -f "${KUBECONFIG}" ] && echo yes || echo no )"
+        rlRun "ls -la /credentials || true" 0 "List /credentials for debug"
 
         oc_cmd+=("--kubeconfig=${KUBECONFIG}")
         api_host_port=$("${oc_cmd[@]}" config view --minify -o jsonpath='{.clusters[0].cluster.server}')
         namespace=$("${oc_cmd[@]}" config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)
         rlLog "Ephemeral kubeconfig (ns=${namespace}, api=${api_host_port})."
 
-        # Retry whoami -t a few times
         for i in {1..5}; do
             token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
-            echo "Attempt $i: token length=${#token}"
+            rlLogVerbose "Attempt $i: token length=${#token}"
             [ -n "$token" ] && break
             sleep 2
         done
 
-        # Fallback to username/password login if token still missing
         if [ -z "$token" ]; then
-            echo "Token missing after retries; checking /credentials/*-password"
             if ls /credentials/*-password >/dev/null 2>&1; then
                 local user pass
                 user=$(head -n1 /credentials/*-username 2>/dev/null || echo "admin")
                 pass=$(< /credentials/*-password)
                 rlLog "Logging in with ephemeral username/password (user=${user})"
-                rlRun "${oc_bin} login -u ${user} -p ${pass} ${api_host_port} --kubeconfig=${KUBECONFIG}" 0 "oc login with ephemeral creds"
+                rlRun "${oc_bin} login -u ${user} -p ${pass} ${api_host_port} --kubeconfig=${KUBECONFIG}" 0 "oc login ephemeral creds"
                 token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
             elif [ -n "${OCP_TOKEN}" ]; then
                 rlLog "Logging in with OCP_TOKEN"
-                rlRun "${oc_bin} login --token=${OCP_TOKEN} --server=${api_host_port} --kubeconfig=${KUBECONFIG}" 0 "oc login with OCP_TOKEN"
+                rlRun "${oc_bin} login --token=${OCP_TOKEN} --server=${api_host_port} --kubeconfig=${KUBECONFIG}" 0 "oc login OCP_TOKEN"
                 token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
             fi
         fi
@@ -91,23 +87,22 @@ ocpopGetAuth() {
     # --- Case 3: External cluster ---
     else
         local kubeconfig_path="${KUBECONFIG:-${HOME}/.kube/config}"
-        echo "===== DEBUG: External cluster ====="
-        echo "Using kubeconfig path: ${kubeconfig_path}"
+        rlLogVerbose "===== DEBUG: External cluster ====="
+        rlLogVerbose "Using kubeconfig path: ${kubeconfig_path}"
         if [ -s "${kubeconfig_path}" ]; then
             oc_cmd+=("--kubeconfig=${kubeconfig_path}")
             api_host_port=$("${oc_cmd[@]}" whoami --show-server | tr -d ' ')
             namespace="${OPERATOR_NAMESPACE:-$(${oc_bin} config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)}"
             rlLog "External cluster (ns=${namespace}, api=${api_host_port})."
             token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
-            echo "Token length: ${#token}"
+            rlLogVerbose "Token length: ${#token}"
             if [ -z "$token" ] && [ -n "${OCP_TOKEN}" ]; then
                 rlLog "Logging in with OCP_TOKEN"
-                rlRun "${oc_bin} login --token=${OCP_TOKEN} --server=${api_host_port}" 0 "oc login with OCP_TOKEN"
+                rlRun "${oc_bin} login --token=${OCP_TOKEN} --server=${api_host_port}" 0 "oc login OCP_TOKEN"
                 token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
             fi
         else
-            echo "ERROR: kubeconfig file not found or empty: ${kubeconfig_path}"
-            rlDie "No kubeconfig found."
+            rlDie "No kubeconfig found at ${kubeconfig_path}"
         fi
     fi
 
@@ -116,21 +111,16 @@ ocpopGetAuth() {
         rlLogWarning "Primary auth failed; trying SA secret."
         local secret_name
         secret_name=$("${oc_cmd[@]}" get sa "$sa_name" -n "$namespace" -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
-        echo "SA secret: ${secret_name:-<none>}"
+        rlLogVerbose "SA secret: ${secret_name:-<none>}"
         if [ -n "$secret_name" ]; then
             token=$("${oc_cmd[@]}" get secret -n "$namespace" "$secret_name" -o json | jq -Mr '.data.token' | base64 -d 2>/dev/null || true)
-            echo "Token length from SA secret: ${#token}"
+            rlLogVerbose "Token length from SA secret: ${#token}"
         fi
     fi
 
     [ -z "$token" ] && rlDie "Failed to retrieve token."
 
-    echo "===== DEBUG: Auth summary ====="
-    echo "API_HOST_PORT=${api_host_port}"
-    echo "DEFAULT_TOKEN length=${#token}"
-    echo "NAMESPACE=${namespace}"
-    echo "===== End of ocpopGetAuth ====="
-
+    rlLogVerbose "===== End of ocpopGetAuth ====="
     echo "API_HOST_PORT=${api_host_port}"
     echo "DEFAULT_TOKEN=${token}"
     echo "NAMESPACE=${namespace}"
@@ -142,8 +132,8 @@ rlJournalStart
 rlPhaseStartSetup
     OPERATOR_NAME="${OPERATOR_NAME:-tang-operator}"
     RAPIDAST_NS="rapidast-test"
-    rlRun 'rlImport "common-cloud-orchestration/ocpop-lib"'
-    rlRun ". ../../TestHelpers/functions.sh"
+    rlRun 'rlImport "common-cloud-orchestration/ocpop-lib"' 0 "Import ocpop-lib"
+    rlRun ". ../../TestHelpers/functions.sh" 0 "Import helper functions"
     TO_DAST_POD_COMPLETED=300
     TO_RAPIDAST=30
 
@@ -157,52 +147,52 @@ rlPhaseStartSetup
         )
         OS=$(uname | tr '[:upper:]' '[:lower:]')
         LATEST_RELEASE_TAG=$(curl -s https://api.github.com/repos/helm/helm/releases/latest | jq -r '.tag_name')
-        rlRun "curl -LO https://get.helm.sh/helm-${LATEST_RELEASE_TAG}-${OS}-${ARCH}.tar.gz"
-        rlRun "tar -xzf helm-${LATEST_RELEASE_TAG}-${OS}-${ARCH}.tar.gz"
-        rlRun "mv ${OS}-${ARCH}/helm /usr/local/bin/helm"
+        rlRun "curl -LO https://get.helm.sh/helm-${LATEST_RELEASE_TAG}-${OS}-${ARCH}.tar.gz" 0 "Download Helm"
+        rlRun "tar -xzf helm-${LATEST_RELEASE_TAG}-${OS}-${ARCH}.tar.gz" 0 "Extract Helm"
+        rlRun "mv ${OS}-${ARCH}/helm /usr/local/bin/helm" 0 "Install Helm"
     fi
 rlPhaseEnd
 
 rlPhaseStartTest "Dynamic Application Security Testing"
-    ocpopLogVerbose "$(helm version)"
+    rlRun "ocpopLogVerbose \"\$(helm version)\"" 0 "Helm version"
 
-    tmpdir=$(mktemp -d)
-    pushd "${tmpdir}"
-    rlRun "git clone https://github.com/RedHatProductSecurity/rapidast.git -b development"
-    pushd rapidast
+    rlRun "tmpdir=$(mktemp -d)" 0 "Create temporary directory"
+    rlRun "pushd ${tmpdir}" 0 "Enter temporary directory"
+
+    rlRun "git clone https://github.com/RedHatProductSecurity/rapidast.git -b development" 0 "Clone Rapidast repo"
+    rlRun "pushd rapidast" 0 "Enter Rapidast directory"
 
     rlRun -c "curl -sSfL -o tang_operator.yaml \
-        https://raw.githubusercontent.com/openshift/nbde-tang-server/main/tools/scan_tools/tang_operator_template.yaml" \
-        0 "Fetching tang_operator.yaml template"
+        https://raw.githubusercontent.com/openshift/nbde-tang-server/main/tools/scan_tools/tang_operator_template.yaml" 0 "Fetch tang_operator.yaml template"
 
     eval "$(ocpopGetAuth)"
     rlLog "API=${API_HOST_PORT} | NS=${NAMESPACE} | Token=${DEFAULT_TOKEN:0:6}..."
 
-    sed -i "s@API_HOST_PORT_HERE@${API_HOST_PORT}@g" tang_operator.yaml
-    sed -i "s@AUTH_TOKEN_HERE@${DEFAULT_TOKEN}@g" tang_operator.yaml
-    sed -i "s@OPERATOR_NAMESPACE_HERE@${NAMESPACE}@g" tang_operator.yaml
-    grep -q "HERE" tang_operator.yaml && rlDie "Template placeholders not replaced!"
+    rlRun "sed -i 's@API_HOST_PORT_HERE@${API_HOST_PORT}@g' tang_operator.yaml" 0 "Replace API_HOST_PORT"
+    rlRun "sed -i 's@AUTH_TOKEN_HERE@${DEFAULT_TOKEN}@g' tang_operator.yaml" 0 "Replace AUTH_TOKEN"
+    rlRun "sed -i 's@OPERATOR_NAMESPACE_HERE@${NAMESPACE}@g' tang_operator.yaml" 0 "Replace OPERATOR_NAMESPACE"
+    rlRun "grep -q 'HERE' tang_operator.yaml && rlDie 'Template placeholders not replaced!'" 0 "Check placeholders replaced"
 
-    sed -i 's@"secContext: {}"@"secContext: {\"privileged\": true}"@' helm/chart/values.yaml
-    sed -i 's@tag: "latest"@tag: "2.8.0"@' helm/chart/values.yaml
+    rlRun "sed -i s@'kubectl --kubeconfig=./kubeconfig '@'${OC_CLIENT} '@g helm/results.sh" 0 "Adapt helm/results.sh"
+    rlRun "sed -i s@'secContext: '{}''@'secContext: '{\"privileged\": true}'@g helm/chart/values.yaml" 0 "Enable privileged"
+    rlRun "sed -i s@'tag: \"latest\"'@'tag: \"2.8.0\"'@g helm/chart/values.yaml" 0 "Set Rapidast tag"
 
-    rlRun -c "helm uninstall rapidast --namespace ${RAPIDAST_NS} || true"
-    rlRun -c "helm install rapidast ./helm/chart/ \
-        --namespace \"${RAPIDAST_NS}\" \
+    rlRun "helm uninstall rapidast --namespace ${RAPIDAST_NS} || true" 0 "Uninstall existing Rapidast"
+    rlRun "helm install rapidast ./helm/chart/ \
+        --namespace ${RAPIDAST_NS} \
         --create-namespace \
-        --set-file rapidastConfig=$(pwd)/tang_operator.yaml" \
-        0 "Installing Rapidast"
+        --set-file rapidastConfig=$(pwd)/tang_operator.yaml" 0 "Install Rapidast"
 
     pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "${RAPIDAST_NS}" "${TO_RAPIDAST}" 1)
     rlAssertNotEquals "Rapidast pod must not be empty" "${pod_name}" ""
     rlRun "ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} ${RAPIDAST_NS} ${pod_name}" 0 "Check Rapidast pod Completed"
 
-    rlRun -c "bash ./helm/results.sh" 0 "Extracting DAST results"
+    rlRun -c "bash ./helm/results.sh" 0 "Extract DAST results"
 
-    report_dir=$(ls -1d "${tmpdir}"/rapidast/tangservers/DAST*tangservers/ | head -1 | sed -e 's@/$@@g')
-    rlLog "REPORT DIR:${report_dir}"
+    rlRun "report_dir=$(ls -1d ${tmpdir}/rapidast/tangservers/DAST*tangservers/ | head -1 | sed -e 's@/$@@g')" 0 "Locate report directory"
+    rlLog "REPORT DIR: ${report_dir}"
 
-    report_file=$(find "${report_dir}" -type f -name zap-report.json | head -1)
+    rlRun "report_file=$(find ${report_dir} -type f -name zap-report.json | head -1)" 0 "Locate zap-report.json"
     [ -f "$report_file" ] || rlDie "DAST report not found!"
     rlLog "DAST report ready: $report_file"
 
@@ -212,4 +202,10 @@ rlPhaseStartTest "Dynamic Application Security Testing"
         rlLog "Alert[$i] -> $risk"
         rlAssertNotEquals "No High Risk alerts" "$risk" "High"
     done
+
+    rlRun "popd" 0 "Exit Rapidast directory"
+    rlRun "popd" 0 "Exit temporary directory"
 rlPhaseEnd
+
+rlJournalPrintText
+rlJournalEnd
