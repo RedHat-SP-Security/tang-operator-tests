@@ -39,32 +39,67 @@ ocpopGetAuth() {
     local oc_bin="${OC_CLIENT:-oc}"
     local -a oc_cmd=("${oc_bin}")
 
+    # Case 1: Running inside CRC pod (service account mount)
     if [ -s /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
         namespace=$(< /var/run/secrets/kubernetes.io/serviceaccount/namespace)
         api_host_port="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
         token=$(< /var/run/secrets/kubernetes.io/serviceaccount/token)
-        rlLog "Detected in-cluster pod (ns=${namespace}, api=${api_host_port})."
+        rlLog "Detected CRC in-cluster pod (ns=${namespace}, api=${api_host_port})."
 
+        # Perform login with SA token to ensure whoami works
+        rlRun "${oc_bin} login --token=${token} --server=${api_host_port}" 0 "oc login with in-cluster SA token"
+
+    # Case 2: Ephemeral pipeline (kubeconfig + password/secret in /credentials)
     elif [ -n "${KUBECONFIG}" ] && [[ "${KUBECONFIG}" == /credentials/* ]]; then
-        namespace=$(${oc_bin} config view --kubeconfig="${KUBECONFIG}" --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)
-        api_host_port=$(${oc_bin} config view --kubeconfig="${KUBECONFIG}" --minify -o jsonpath='{.clusters[0].cluster.server}')
-        rlLog "Detected pipeline kubeconfig (ns=${namespace}, api=${api_host_port})."
         oc_cmd+=("--kubeconfig=${KUBECONFIG}")
-        token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
+        api_host_port=$("${oc_cmd[@]}" config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+        namespace=$("${oc_cmd[@]}" config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)
+        rlLog "Detected ephemeral pipeline kubeconfig (ns=${namespace}, api=${api_host_port})."
 
-    else
-        namespace="${OPERATOR_NAMESPACE:-$(${oc_bin} config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)}"
-        api_host_port=$(${oc_bin} config view --minify -o jsonpath='{.clusters[0].cluster.server}')
-        rlLog "Detected external cluster (ns=${namespace}, api=${api_host_port})."
-        oc_cmd+=("--kubeconfig=${KUBECONFIG:-${HOME}/.kube/config}")
+        # Prefer token if whoami works
         token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
+        if [ -z "$token" ]; then
+            # Try login using provided credentials
+            if [ -s /credentials/*-password ]; then
+                local user pass
+                user=$(head -n1 /credentials/*-username 2>/dev/null || echo "admin")
+                pass=$(< /credentials/*-password)
+                rlRun "${oc_bin} login -u ${user} -p ${pass} ${api_host_port} --kubeconfig=${KUBECONFIG}" 0 "oc login with ephemeral pipeline creds"
+                token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
+            fi
+        fi
+
+    # Case 3: External dev setup (crc, local, etc.)
+    else
+        local kubeconfig_path="${KUBECONFIG:-${HOME}/.kube/config}"
+        if [ -s "${kubeconfig_path}" ]; then
+            oc_cmd+=("--kubeconfig=${kubeconfig_path}")
+            api_host_port=$("${oc_cmd[@]}" whoami --show-server | tr -d ' ')
+            namespace="${OPERATOR_NAMESPACE:-$(${oc_bin} config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)}"
+            rlLog "Detected external cluster (ns=${namespace}, api=${api_host_port})."
+
+            # Ensure we are logged in (token may be missing if only client certs are present)
+            token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
+            if [ -z "$token" ] && [ -n "${OCP_TOKEN}" ]; then
+                rlRun "${oc_bin} login --token=${OCP_TOKEN} --server=${api_host_port}" 0 "oc login with provided OCP_TOKEN"
+                token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
+            fi
+        else
+            rlDie "No kubeconfig found for external cluster."
+        fi
     fi
 
+    # Fallback: get token from service account secret
     if [ -z "$token" ]; then
         rlLogWarning "Primary auth failed; trying SA secret."
         local secret_name
         secret_name=$("${oc_cmd[@]}" get sa "$sa_name" -n "$namespace" -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
         [ -n "$secret_name" ] && token=$("${oc_cmd[@]}" get secret -n "$namespace" "$secret_name" -o json | jq -Mr '.data.token' | base64 -d 2>/dev/null || true)
+    fi
+
+    # Die if still no token
+    if [ -z "$token" ]; then
+        rlDie "Failed to retrieve a valid authentication token."
     fi
 
     echo "API_HOST_PORT=${api_host_port}"
