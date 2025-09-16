@@ -56,33 +56,23 @@ ocpopGetAuth() {
         namespace=$("${oc_cmd[@]}" config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)
         rlLog "Ephemeral kubeconfig reports: api=${api_host_port:-<none>}, ns=${namespace}"
 
-        for try in {1..5}; do
-            token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
-            rlLog "whoami -t attempt ${try}, token length=${#token}"
-            [ -n "$token" ] && break
-            sleep 2
-        done
-
-        if [ -z "$token" ]; then
-            if ls /credentials/*-password >/dev/null 2>&1; then
-                local user pass
-                user=$(head -n1 /credentials/*-username 2>/dev/null || echo "admin")
-                pass=$(< /credentials/*-password)
-                rlLog "Attempting oc login with username/password (user=${user})"
-                rlRun "${oc_bin} login -u ${user} -p '${pass}' --server='${api_host_port}' --kubeconfig='${KUBECONFIG}'" 0-255 "oc login (ephemeral creds)" || true
-                token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
-            elif [ -n "${OCP_TOKEN}" ]; then
-                rlLog "Attempting oc login with provided OCP_TOKEN"
-                rlRun "${oc_bin} login --token='${OCP_TOKEN}' --server='${api_host_port}' --kubeconfig='${KUBECONFIG}'" 0-255 "oc login (OCP_TOKEN)" || true
-                token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
-            fi
+        # Try to fetch token, but do not fail if it's missing
+        token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
+        if [ -n "$token" ]; then
+            rlLog "Ephemeral kubeconfig token retrieved (len=${#token})"
+        else
+            rlLogWarning "Ephemeral kubeconfig does not provide a token, proceeding with kubeconfig-only auth"
+            token="skip"
         fi
 
+    # --- Case B: In-cluster SA ---
     elif [ -s /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
         namespace=$(< /var/run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null || echo default)
         api_host_port="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
         token=$(< /var/run/secrets/kubernetes.io/serviceaccount/token 2>/dev/null || true)
         rlLog "Detected in-cluster environment (service account). namespace=${namespace}"
+
+    # --- Case C: External cluster (CRC, dev, etc.) ---
     else
         rlLog "Assuming external cluster (oc client present / already logged in)"
         api_host_port=$("${oc_bin}" whoami --show-server 2>/dev/null | tr -d ' ' || true)
@@ -95,6 +85,7 @@ ocpopGetAuth() {
         fi
     fi
 
+    # For CRC/external + in-cluster, still enforce token presence
     if [ -z "$token" ]; then
         rlDie "Failed to retrieve token."
         return 1
