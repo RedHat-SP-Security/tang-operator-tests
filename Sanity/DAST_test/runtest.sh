@@ -169,7 +169,6 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     grep -q "HERE" tang_operator.yaml && rlDie "Template placeholders not replaced!"
 
     # 5 - adapt helm chart
-    pushd rapidast || rlDie "Cannot enter rapidast root"
     sed -i s@"kubectl --kubeconfig=./kubeconfig "@"${OC_CLIENT} "@g helm/results.sh
     sed -i s@"secContext: '{}'"@"secContext: '{\"privileged\": true}'"@ helm/chart/values.yaml
     sed -i s@'tag: "latest"'@'tag: "2.8.0"'@g helm/chart/values.yaml
