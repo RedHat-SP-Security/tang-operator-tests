@@ -53,6 +53,8 @@ rlJournalStart
         fi
     rlPhaseEnd
 
+    -------------
+
     ############# DAST TESTS ##############
     rlPhaseStartTest "Dynamic Application Security Testing"
         # 1 - Log helm version
@@ -72,34 +74,42 @@ rlJournalStart
         fi
 
         # 4 - adapt configuration file template (token, machine)
-        if [ "${EXECUTION_MODE}" == "CLUSTER" ]; then
-            API_HOST_PORT=$(minikube ip)
-            DEFAULT_TOKEN="TEST_TOKEN_UNREQUIRED_IN_EPHEMERAL"
-        else
-            # Ensure user is logged in
-            if ! oc whoami &>/dev/null; then
-                rlLog "Not logged in, attempting to login using service account..."
-                if [ -n "${OCP_TOKEN}" ]; then
-                    rlRun "oc login --token=${OCP_TOKEN} --server=${OC_CLIENT}" || rlDie "Cannot login to OCP"
-                else
-                    rlDie "No valid token to login, please provide OCP_TOKEN"
-                fi
-            fi
 
-            API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d ' ')
+        # Use oc whoami --show-server to get the API server URL for all OpenShift clusters
+        # This works for both crc and ephemeral pipelines.
+        API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d ' ')
 
-            DEFAULT_TOKEN=$(oc whoami -t)
-            if [ -z "${DEFAULT_TOKEN}" ]; then
-                DEFAULT_TOKEN=$(ocpopPrintTokenFromConfiguration)
-            fi
-            if [ -z "${DEFAULT_TOKEN}" ]; then
-                # fallback: get token from operator secrets
-                DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" \
-                    "$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" | grep ^${OPERATOR_NAME} | grep service-account | awk '{print $1}')" \
-                    -o json | jq -Mr '.data.token' | base64 -d)
+        # Attempt to get the token, which is necessary for the API calls.
+        if ! oc whoami &>/dev/null; then
+            rlLog "Not logged in, attempting to login using service account..."
+            if [ -n "${OCP_TOKEN}" ]; then
+                rlRun "oc login --token=${OCP_TOKEN} --server=${OC_CLIENT}" || rlDie "Cannot login to OCP"
+            else
+                rlDie "No valid token to login, please provide OCP_TOKEN"
             fi
         fi
 
+        # This is a key step to resolve the "serviceaccounts not found" error.
+        rlLog "Checking for service account ${OPERATOR_NAME} in namespace ${OPERATOR_NAMESPACE}..."
+        # Check if the service account exists, create it if it doesn't.
+        if ! "${OC_CLIENT}" get sa "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" &>/dev/null; then
+            rlLog "Service account ${OPERATOR_NAME} not found. Creating it now."
+            rlRun "${OC_CLIENT} create sa ${OPERATOR_NAME} -n ${OPERATOR_NAMESPACE}"
+        fi
+
+
+        DEFAULT_TOKEN=$("${OC_CLIENT}" create token ${OPERATOR_NAME})
+
+        if [ -z "${DEFAULT_TOKEN}" ]; then
+            DEFAULT_TOKEN=$(ocpopPrintTokenFromConfiguration)
+        fi
+        if [ -z "${DEFAULT_TOKEN}" ]; then
+            # fallback: get token from operator secrets
+            DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" \
+                "$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" | grep ^${OPERATOR_NAME} | grep service-account | awk '{print $1}')" \
+                -o json | jq -Mr '.data.token' | base64 -d)
+        fi
+    
         echo "API_HOST_PORT=${API_HOST_PORT}"
         echo "DEFAULT_TOKEN=${DEFAULT_TOKEN}"
 
@@ -108,7 +118,7 @@ rlJournalStart
         sed -i s@AUTH_TOKEN_HERE@"${DEFAULT_TOKEN}"@g tang_operator.yaml
         sed -i s@OPERATOR_NAMESPACE_HERE@"${OPERATOR_NAMESPACE}"@g tang_operator.yaml
 
-rlAssertNotEquals "Checking token not empty" "${DEFAULT_TOKEN}" ""
+        rlAssertNotEquals "Checking token not empty" "${DEFAULT_TOKEN}" ""
 
         # 5 - adapt helm
         pushd rapidast || exit
@@ -163,7 +173,7 @@ rlAssertNotEquals "Checking token not empty" "${DEFAULT_TOKEN}" ""
         popd || exit
 
     rlPhaseEnd
-    ############# /DAST TESTS #############
-
+    -------------
+    
 rlJournalPrintText
 rlJournalEnd
