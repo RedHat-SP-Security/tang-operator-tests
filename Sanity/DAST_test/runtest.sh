@@ -38,7 +38,12 @@ ocpopGetAuth() {
     local oc_bin="${OC_CLIENT:-oc}"
     local -a oc_cmd=("${oc_bin}")
 
-    # Case 1: CRC pod
+    echo "===== DEBUG: Starting ocpopGetAuth ====="
+    echo "OC_CLIENT=${OC_CLIENT:-<unset>}"
+    echo "KUBECONFIG=${KUBECONFIG:-<unset>}"
+    echo "OCP_TOKEN=${OCP_TOKEN:-<unset>}"
+
+    # --- Case 1: CRC pod ---
     if [ -s /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
         namespace=$(< /var/run/secrets/kubernetes.io/serviceaccount/namespace)
         api_host_port="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
@@ -46,55 +51,85 @@ ocpopGetAuth() {
         rlLog "Detected CRC pod (ns=${namespace}, api=${api_host_port})."
         rlRun "${oc_bin} login --token=${token} --server=${api_host_port}" 0 "oc login with SA token"
 
-    # Case 2: Ephemeral pipeline
+    # --- Case 2: Ephemeral pipeline ---
     elif [ -n "${KUBECONFIG}" ] && [[ "${KUBECONFIG}" == /credentials/* ]]; then
-        oc_cmd+=("--kubeconfig=${KUBECONFIG}")
+        echo "===== DEBUG: Ephemeral pipeline detected ====="
+        echo "KUBECONFIG file exists: $( [ -f "${KUBECONFIG}" ] && echo yes || echo no )"
+        echo "Listing /credentials:"
+        ls -la /credentials || true
 
-        # auto-detect API server and namespace from kubeconfig (cluster name is dynamic)
+        oc_cmd+=("--kubeconfig=${KUBECONFIG}")
         api_host_port=$("${oc_cmd[@]}" config view --minify -o jsonpath='{.clusters[0].cluster.server}')
         namespace=$("${oc_cmd[@]}" config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)
-        rlLog "Detected ephemeral pipeline kubeconfig (ns=${namespace}, api=${api_host_port})."
+        rlLog "Ephemeral kubeconfig (ns=${namespace}, api=${api_host_port})."
 
-        token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
+        # Retry whoami -t a few times
+        for i in {1..5}; do
+            token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
+            echo "Attempt $i: token length=${#token}"
+            [ -n "$token" ] && break
+            sleep 2
+        done
+
+        # Fallback to username/password login if token still missing
         if [ -z "$token" ]; then
+            echo "Token missing after retries; checking /credentials/*-password"
             if ls /credentials/*-password >/dev/null 2>&1; then
                 local user pass
                 user=$(head -n1 /credentials/*-username 2>/dev/null || echo "admin")
                 pass=$(< /credentials/*-password)
+                rlLog "Logging in with ephemeral username/password (user=${user})"
                 rlRun "${oc_bin} login -u ${user} -p ${pass} ${api_host_port} --kubeconfig=${KUBECONFIG}" 0 "oc login with ephemeral creds"
                 token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
             elif [ -n "${OCP_TOKEN}" ]; then
+                rlLog "Logging in with OCP_TOKEN"
                 rlRun "${oc_bin} login --token=${OCP_TOKEN} --server=${api_host_port} --kubeconfig=${KUBECONFIG}" 0 "oc login with OCP_TOKEN"
                 token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
             fi
         fi
 
-    # Case 3: External cluster (developer laptop, etc.)
+    # --- Case 3: External cluster ---
     else
         local kubeconfig_path="${KUBECONFIG:-${HOME}/.kube/config}"
+        echo "===== DEBUG: External cluster ====="
+        echo "Using kubeconfig path: ${kubeconfig_path}"
         if [ -s "${kubeconfig_path}" ]; then
             oc_cmd+=("--kubeconfig=${kubeconfig_path}")
             api_host_port=$("${oc_cmd[@]}" whoami --show-server | tr -d ' ')
             namespace="${OPERATOR_NAMESPACE:-$(${oc_bin} config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)}"
-            rlLog "Detected external cluster (ns=${namespace}, api=${api_host_port})."
+            rlLog "External cluster (ns=${namespace}, api=${api_host_port})."
             token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
+            echo "Token length: ${#token}"
             if [ -z "$token" ] && [ -n "${OCP_TOKEN}" ]; then
+                rlLog "Logging in with OCP_TOKEN"
                 rlRun "${oc_bin} login --token=${OCP_TOKEN} --server=${api_host_port}" 0 "oc login with OCP_TOKEN"
                 token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
             fi
         else
+            echo "ERROR: kubeconfig file not found or empty: ${kubeconfig_path}"
             rlDie "No kubeconfig found."
         fi
     fi
 
+    # --- Fallback to SA secret ---
     if [ -z "$token" ]; then
         rlLogWarning "Primary auth failed; trying SA secret."
         local secret_name
         secret_name=$("${oc_cmd[@]}" get sa "$sa_name" -n "$namespace" -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
-        [ -n "$secret_name" ] && token=$("${oc_cmd[@]}" get secret -n "$namespace" "$secret_name" -o json | jq -Mr '.data.token' | base64 -d 2>/dev/null || true)
+        echo "SA secret: ${secret_name:-<none>}"
+        if [ -n "$secret_name" ]; then
+            token=$("${oc_cmd[@]}" get secret -n "$namespace" "$secret_name" -o json | jq -Mr '.data.token' | base64 -d 2>/dev/null || true)
+            echo "Token length from SA secret: ${#token}"
+        fi
     fi
 
     [ -z "$token" ] && rlDie "Failed to retrieve token."
+
+    echo "===== DEBUG: Auth summary ====="
+    echo "API_HOST_PORT=${api_host_port}"
+    echo "DEFAULT_TOKEN length=${#token}"
+    echo "NAMESPACE=${namespace}"
+    echo "===== End of ocpopGetAuth ====="
 
     echo "API_HOST_PORT=${api_host_port}"
     echo "DEFAULT_TOKEN=${token}"
