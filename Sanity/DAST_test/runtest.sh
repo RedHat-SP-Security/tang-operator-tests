@@ -91,7 +91,7 @@ ocpopGetAuth() {
         rlLogWarning "Primary auth failed; trying SA secret."
         local secret_name
         secret_name=$("${oc_cmd[@]}" get sa "$sa_name" -n "$namespace" -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
-        [ -n "$secret_name" ] && token=$("${oc_cmd[@]}" get secret -n "$namespace" "$secret_name" -o json | jq -Mr '.data.token' | base64 -d 2>/dev/null || true
+        [ -n "$secret_name" ] && token=$("${oc_cmd[@]}" get secret -n "$namespace" "$secret_name" -o json | jq -Mr '.data.token' | base64 -d 2>/dev/null || true)
     fi
 
     [ -z "$token" ] && rlDie "Failed to retrieve token."
