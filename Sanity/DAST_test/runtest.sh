@@ -43,26 +43,25 @@ ocpopGetAuth() {
         namespace=$(< /var/run/secrets/kubernetes.io/serviceaccount/namespace)
         api_host_port="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
         token=$(< /var/run/secrets/kubernetes.io/serviceaccount/token)
-        rlLog "Detected in-cluster pod (namespace=${namespace}, api=${api_host_port})." >&2
+        rlLog "Detected in-cluster pod (ns=${namespace}, api=${api_host_port})."
 
     elif [ -n "${KUBECONFIG}" ] && [[ "${KUBECONFIG}" == /credentials/* ]]; then
         namespace=$(${oc_bin} config view --kubeconfig="${KUBECONFIG}" --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)
         api_host_port=$(${oc_bin} config view --kubeconfig="${KUBECONFIG}" --minify -o jsonpath='{.clusters[0].cluster.server}')
-        rlLog "Detected ephemeral pipeline with kubeconfig (namespace=${namespace}, api=${api_host_port})." >&2
+        rlLog "Detected pipeline kubeconfig (ns=${namespace}, api=${api_host_port})."
         oc_cmd+=("--kubeconfig=${KUBECONFIG}")
         token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
-        [ -z "$token" ] && DEFAULT_TOKEN=""
 
     else
         namespace="${OPERATOR_NAMESPACE:-$(${oc_bin} config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)}"
         api_host_port=$(${oc_bin} config view --minify -o jsonpath='{.clusters[0].cluster.server}')
-        rlLog "Detected external cluster (namespace=${namespace}, api=${api_host_port})." >&2
+        rlLog "Detected external cluster (ns=${namespace}, api=${api_host_port})."
         oc_cmd+=("--kubeconfig=${KUBECONFIG:-${HOME}/.kube/config}")
         token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
     fi
 
     if [ -z "$token" ]; then
-        rlLogWarning "Primary auth failed; trying SA secret." >&2
+        rlLogWarning "Primary auth failed; trying SA secret."
         local secret_name
         secret_name=$("${oc_cmd[@]}" get sa "$sa_name" -n "$namespace" -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
         [ -n "$secret_name" ] && token=$("${oc_cmd[@]}" get secret -n "$namespace" "$secret_name" -o json | jq -Mr '.data.token' | base64 -d 2>/dev/null || true)
@@ -71,7 +70,6 @@ ocpopGetAuth() {
     echo "API_HOST_PORT=${api_host_port}"
     echo "DEFAULT_TOKEN=${token}"
     echo "NAMESPACE=${namespace}"
-    return 0
 }
 
 # --- MAIN TEST ---
@@ -84,90 +82,70 @@ rlPhaseStartSetup
     rlRun ". ../../TestHelpers/functions.sh"
     TO_DAST_POD_COMPLETED=300
     TO_RAPIDAST=30
+
+    if ! command -v helm &> /dev/null; then
+        ARCH=$(case $(uname -m) in x86_64) echo amd64 ;; aarch64) echo arm64 ;; *) uname -m ;; esac)
+        OS=$(uname | tr '[:upper:]' '[:lower:]')
+        LATEST_RELEASE_TAG=$(curl -s https://api.github.com/repos/helm/helm/releases/latest | jq -r '.tag_name')
+        rlRun "curl -LO https://get.helm.sh/helm-${LATEST_RELEASE_TAG}-${OS}-${ARCH}.tar.gz"
+        rlRun "tar -xzf helm-${LATEST_RELEASE_TAG}-${OS}-${ARCH}.tar.gz"
+        rlRun "mv ${OS}-${ARCH}/helm /usr/local/bin/helm"
+    fi
 rlPhaseEnd
 
 rlPhaseStartTest "Dynamic Application Security Testing"
 
-    rlLog "Preparing Rapidast configuration..."
+    ocpopLogVerbose "$(helm version)"
 
-    # Gather cluster auth info
-    eval "$(ocpopGetAuth "${KUBECONFIG}" "${OPERATOR_NAMESPACE}")"
-
-    rlLog "API host/port: ${API_HOST_PORT}"
-    rlLog "Default token: ${DEFAULT_TOKEN:-<empty>}"
-    rlLog "Operator namespace: ${OPERATOR_NAMESPACE}"
-
-    # Always fetch the latest template
-    rlRun -c "curl -sSfL -o tang_operator.yaml \
-        https://raw.githubusercontent.com/openshift/nbde-tang-server/main/tools/scan_tools/tang_operator_template.yaml" \
-        0 "Fetching tang_operator.yaml template"
-    
-    # Store the absolute path of the configuration file before changing directories.
-    tang_config_path=$(pwd)/tang_operator.yaml
-
-    # Replace placeholders in tang_operator.yaml
-    sed -i "s@API_HOST_PORT_HERE@${API_HOST_PORT}@g" tang_operator.yaml
-    sed -i "s@AUTH_TOKEN_HERE@'${DEFAULT_TOKEN}'@g" tang_operator.yaml
-    sed -i "s@OPERATOR_NAMESPACE_HERE@${OPERATOR_NAMESPACE}@g" tang_operator.yaml
-
-    # Sanity check: make sure no placeholders remain
-    if grep -q "API_HOST_PORT_HERE\|AUTH_TOKEN_HERE\|OPERATOR_NAMESPACE_HERE" tang_operator.yaml; then
-        rlDie "tang_operator.yaml still contains unreplaced placeholders"
-    fi
-
-    rlLog "Cloning Rapidast repo and deploying via Helm..."
     tmpdir=$(mktemp -d)
     pushd "${tmpdir}"
     rlRun "git clone https://github.com/RedHatProductSecurity/rapidast.git -b development"
     pushd rapidast
 
-    : "${oc_client:=oc}"
+    # Fetch template config
+    rlRun -c "curl -sSfL -o tang_operator.yaml \
+        https://raw.githubusercontent.com/openshift/nbde-tang-server/main/tools/scan_tools/tang_operator_template.yaml" \
+        0 "Fetching tang_operator.yaml template"
 
-    # Install Rapidast Helm chart using the absolute path
+    # Gather cluster auth info
+    eval "$(ocpopGetAuth)"
+    rlLog "API=${API_HOST_PORT} | NS=${NAMESPACE} | Token=${DEFAULT_TOKEN:0:6}..."
+
+    # Replace placeholders
+    sed -i "s@API_HOST_PORT_HERE@${API_HOST_PORT}@g" tang_operator.yaml
+    sed -i "s@AUTH_TOKEN_HERE@${DEFAULT_TOKEN}@g" tang_operator.yaml
+    sed -i "s@OPERATOR_NAMESPACE_HERE@${NAMESPACE}@g" tang_operator.yaml
+    grep -q "HERE" tang_operator.yaml && rlDie "tang_operator.yaml still has placeholders"
+
+    # Adapt helm values
+    sed -i 's@"secContext: {}"@"secContext: {\"privileged\": true}"@' helm/chart/values.yaml
+    sed -i 's@tag: "latest"@tag: "2.8.0"@' helm/chart/values.yaml
+
+    # Deploy Rapidast
+    rlRun -c "helm uninstall rapidast --namespace ${RAPIDAST_NS} || true"
     rlRun -c "helm install rapidast ./helm/chart/ \
         --namespace \"${RAPIDAST_NS}\" \
         --create-namespace \
-        --set-file rapidastConfig=${tang_config_path}" \
-        0 "Installing rapidast helm chart"
+        --set-file rapidastConfig=$(pwd)/tang_operator.yaml" \
+        0 "Installing Rapidast helm chart"
 
     pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "${RAPIDAST_NS}" "${TO_RAPIDAST}" 1)
     rlAssertNotEquals "Rapidast pod must not be empty" "${pod_name}" ""
+    rlRun "ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} ${RAPIDAST_NS} ${pod_name}" \
+        0 "Checking Rapidast pod Completed"
 
-    if ! ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} "${RAPIDAST_NS}" "${pod_name}" ; then
-        rlRun "oc describe pod ${pod_name} -n ${RAPIDAST_NS} || true" 0 "Describe failed pod"
-        rlRun "oc logs ${pod_name} -n ${RAPIDAST_NS} || true" 0 "Logs of failed pod"
-        rlDie "DAST pod failed. See logs above."
-    fi
+    # Extract results
+    rlRun -c "bash ./helm/results.sh" 0 "Extracting DAST results"
 
-    rlLog "Running results.sh to generate the DAST report..."
-    rlRun -c "bash ./helm/results.sh" 0 "Generating DAST report"
-
-    report_base_dir="${tmpdir}/rapidast/tangservers/"
-    retry_count=0
-    max_retries=5
-    sleep_seconds=5
-    report_dir=""
-
-    while [ -z "$report_dir" ] && [ $retry_count -lt $max_retries ]; do
-        report_dir=$(find "${report_base_dir}" -maxdepth 1 -type d -name "DAST*tangservers" | head -1)
-        if [ -z "$report_dir" ]; then
-            rlLog "Report directory not found yet. Sleeping ${sleep_seconds}s..."
-            sleep $sleep_seconds
-            ((retry_count++))
-        fi
-    done
-
-    rlAssertNotEquals "Report directory must exist" "$report_dir"
-
-    report_file="${report_dir}/zap/zap-report.json"
-    [ -f "$report_file" ] || rlDie "DAST report file '${report_file}' does not exist"
-    rlLog "DAST report file is ready: ${report_file}"
+    report_file=$(find ./tangservers/ -type f -name zap-report.json | head -1)
+    [ -f "$report_file" ] || rlDie "DAST report not found!"
+    rlLog "DAST report ready: $report_file"
 
     alerts=$(jq '.site[0].alerts | length' < "$report_file")
-    for ((alert=0; alert<alerts; alert++)); do
-        risk_desc=$(jq -r ".site[0].alerts[${alert}].riskdesc" < "$report_file")
-        rlLog "Alert[${alert}] -> Priority: ${risk_desc}"
-        rlAssertNotEquals "Check alarm is not High Risk" "${risk_desc}" "High"
+    for ((i=0; i<alerts; i++)); do
+        risk=$(jq -r ".site[0].alerts[${i}].riskdesc" < "$report_file")
+        rlLog "Alert[$i] -> $risk"
+        rlAssertNotEquals "Check no High Risk" "$risk" "High"
     done
 
 rlPhaseEnd
