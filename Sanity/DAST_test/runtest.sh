@@ -113,7 +113,13 @@ rlPhaseStartSetup
     TO_RAPIDAST=30
 
     if ! command -v helm &> /dev/null; then
-        ARCH=$(case $(uname -m) in x86_64) echo amd64 ;; aarch64) echo arm64 ;; *) uname -m ;; esac)
+        ARCH=$(
+            case "$(uname -m)" in
+                x86_64)  echo amd64 ;;
+                aarch64) echo arm64 ;;
+                *)       uname -m ;;
+            esac
+        )
         OS=$(uname | tr '[:upper:]' '[:lower:]')
         LATEST_RELEASE_TAG=$(curl -s https://api.github.com/repos/helm/helm/releases/latest | jq -r '.tag_name')
         rlRun "curl -LO https://get.helm.sh/helm-${LATEST_RELEASE_TAG}-${OS}-${ARCH}.tar.gz"
