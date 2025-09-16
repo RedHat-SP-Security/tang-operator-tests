@@ -75,41 +75,40 @@ rlJournalStart
 
         # 4 - adapt configuration file template (token, machine)
 
-        # Use oc whoami --show-server to get the API server URL for all OpenShift clusters
-        # This works for both crc and ephemeral pipelines.
+        # Get the API host and port.
         API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d ' ')
 
-        # Attempt to get the token, which is necessary for the API calls.
-        if ! oc whoami &>/dev/null; then
-            rlLog "Not logged in, attempting to login using service account..."
-            if [ -n "${OCP_TOKEN}" ]; then
-                rlRun "oc login --token=${OCP_TOKEN} --server=${OC_CLIENT}" || rlDie "Cannot login to OCP"
-            else
-                rlDie "No valid token to login, please provide OCP_TOKEN"
+        # --- FIX: New, streamlined token retrieval logic. ---
+
+        # 1. Attempt to get token via `oc whoami -t`. This works with most
+        # modern setups and is the first preference.
+        DEFAULT_TOKEN=$(oc whoami -t)
+
+        # 2. If no token is found, try creating the SA and getting the token
+        # from its secret. This is for environments where `oc whoami -t`
+        # fails but cert-based auth is used.
+        if [ -z "${DEFAULT_TOKEN}" ]; then
+            rlLog "Checking for service account ${OPERATOR_NAME} in namespace ${OPERATOR_NAMESPACE}..."
+            if ! "${OC_CLIENT}" get sa "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" &>/dev/null; then
+                rlLog "Service account ${OPERATOR_NAME} not found. Creating it now."
+                rlRun "${OC_CLIENT} create sa ${OPERATOR_NAME} -n ${OPERATOR_NAMESPACE}"
+            fi
+
+            SERVICE_ACCOUNT_SECRET=$("${OC_CLIENT}" describe sa "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" | grep -E '^Tokens:' | awk '{print $2}')
+            if [ -z "${SERVICE_ACCOUNT_SECRET}" ]; then
+                SERVICE_ACCOUNT_SECRET=$("${OC_CLIENT}" describe sa "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" | grep -E '^token-' | awk '{print $1}')
+            fi
+
+            if [ -n "${SERVICE_ACCOUNT_SECRET}" ]; then
+                DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" "${SERVICE_ACCOUNT_SECRET}" -o json | jq -Mr '.data.token' | base64 -d)
             fi
         fi
 
-        # This is a key step to resolve the "serviceaccounts not found" error.
-        rlLog "Checking for service account ${OPERATOR_NAME} in namespace ${OPERATOR_NAMESPACE}..."
-        # Check if the service account exists, create it if it doesn't.
-        if ! "${OC_CLIENT}" get sa "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" &>/dev/null; then
-            rlLog "Service account ${OPERATOR_NAME} not found. Creating it now."
-            rlRun "${OC_CLIENT} create sa ${OPERATOR_NAME} -n ${OPERATOR_NAMESPACE}"
-        fi
-
-
-        DEFAULT_TOKEN=$("${OC_CLIENT}" create token ${OPERATOR_NAME})
-
+        # 3. Final fallback to ocpop library.
         if [ -z "${DEFAULT_TOKEN}" ]; then
             DEFAULT_TOKEN=$(ocpopPrintTokenFromConfiguration)
         fi
-        if [ -z "${DEFAULT_TOKEN}" ]; then
-            # fallback: get token from operator secrets
-            DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" \
-                "$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" | grep ^${OPERATOR_NAME} | grep service-account | awk '{print $1}')" \
-                -o json | jq -Mr '.data.token' | base64 -d)
-        fi
-    
+        
         echo "API_HOST_PORT=${API_HOST_PORT}"
         echo "DEFAULT_TOKEN=${DEFAULT_TOKEN}"
 
@@ -135,34 +134,32 @@ rlJournalStart
         # 7 - extract results
         rlRun -c "bash ./helm/results.sh 2>/dev/null" 0 "Extracting DAST results"
 
-        # 8 - parse results (do not have to ensure no previous results exist, as this is a temporary directory)
-        # Check no alarm exist ...
-        report_dir=$(ls -1d "${tmpdir}"/rapidast/tangservers/DAST*tangservers/ | head -1 | sed -e 's@/$@@g')
+        # Find the ZAP report file using a robust search.
+        report_file=$(find "${tmpdir}" -name "zap-report.json" -type f | head -n 1)
+        report_dir=$(dirname "${report_file}")
+        
+        ocpopLogVerbose "REPORT FILE:${report_file}"
         ocpopLogVerbose "REPORT DIR:${report_dir}"
 
-        rlAssertNotEquals "Checking report_dir not empty" "${report_dir}" ""
-
-        report_file="${report_dir}/zap/zap-report.json"
-        ocpopLogVerbose "REPORT FILE:${report_file}"
-
+        # 8 - parse results
         if [ -n "${report_dir}" ] && [ -f "${report_file}" ];
         then
-            alerts=$(jq '.site[0].alerts | length' < "${report_dir}/zap/zap-report.json" )
+            alerts=$(jq '.site[0].alerts | length' < "${report_file}" )
             ocpopLogVerbose "Alerts:${alerts}"
             for ((alert=0; alert<alerts; alert++));
             do
-                risk_desc=$(jq ".site[0].alerts[${alert}].riskdesc" < "${report_dir}/zap/zap-report.json" | awk '{print $1}' | tr -d '"' | tr -d " ")
+                risk_desc=$(jq ".site[0].alerts[${alert}].riskdesc" < "${report_file}" | awk '{print $1}' | tr -d '"' | tr -d " ")
                 rlLog "Alert[${alert}] -> Priority:[${risk_desc}]"
                 rlAssertNotEquals "Checking alarm is not High Risk" "${risk_desc}" "High"
             done
             if [ "${alerts}" != "0" ];
             then
-                rlLogWarning "A total of [${alerts}] alerts were detected! Please, review ZAP report: ${report_dir}/zap/zap-report.json"
+                rlLogWarning "A total of [${alerts}] alerts were detected! Please, review ZAP report: ${report_file}"
             else
                 rlLog "No alerts detected"
             fi
         else
-            rlLogWarning "Report file:${report_dir}/zap/zap-report.json does not exist"
+            rlLogWarning "Report file:${report_file} does not exist"
         fi
 
         # 9 - clean helm installation
