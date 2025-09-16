@@ -26,161 +26,144 @@
 #
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-# Include Beaker environment (guard to avoid double-source warnings)
-if [ -z "${BEAKERLIB_INCLUDED:-}" ]; then
-    . /usr/share/beakerlib/beakerlib.sh || exit 1
-    BEAKERLIB_INCLUDED=1
-fi
+# Include Beaker environment
+. /usr/share/beakerlib/beakerlib.sh || exit 1
 
-# --- Helpers -----------------------------------------------------------------
 
-# Get auth information and ensure we can run oc commands.
-# Outputs: API_HOST_PORT, DEFAULT_TOKEN, NAMESPACE (exported via echo)
-ocpopGetAuth() {
-    local sa_name=${1:-dast-test-sa}
-    local namespace api_host_port token
-    local oc_bin="${OC_CLIENT:-oc}"
-    local -a oc_cmd=("${oc_bin}")
-
-    rlLog "Starting ocpopGetAuth()"
-    rlLog "OC_CLIENT=${OC_CLIENT:-<unset>}"
-    rlLog "KUBECONFIG=${KUBECONFIG:-<unset>}"
-    rlLog "OCP_TOKEN=${OCP_TOKEN:-<unset>}"
-
-    # --- Case A: Ephemeral pipeline with /credentials kubeconfig ---
-    if [ -n "${KUBECONFIG}" ] && [[ "${KUBECONFIG}" == /credentials/* ]]; then
-        rlLog "Detected ephemeral pipeline kubeconfig: ${KUBECONFIG}"
-        rlRun "ls -la /credentials || true" 0 "List /credentials for debug"
-        oc_cmd+=("--kubeconfig=${KUBECONFIG}")
-        api_host_port=$("${oc_cmd[@]}" config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || true)
-        namespace=$("${oc_cmd[@]}" config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)
-        rlLog "Ephemeral kubeconfig reports: api=${api_host_port:-<none>}, ns=${namespace}"
-
-        # Try to fetch token, but do not fail if it's missing
-        token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
-        if [ -n "$token" ]; then
-            rlLog "Ephemeral kubeconfig token retrieved (len=${#token})"
-        else
-            rlLogWarning "Ephemeral kubeconfig does not provide a token, proceeding with kubeconfig-only auth"
-            token="skip"
-        fi
-
-    # --- Case B: In-cluster SA ---
-    elif [ -s /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
-        namespace=$(< /var/run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null || echo default)
-        api_host_port="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
-        token=$(< /var/run/secrets/kubernetes.io/serviceaccount/token 2>/dev/null || true)
-        rlLog "Detected in-cluster environment (service account). namespace=${namespace}"
-
-    # --- Case C: External cluster (CRC, dev, etc.) ---
-    else
-        rlLog "Assuming external cluster (oc client present / already logged in)"
-        api_host_port=$("${oc_bin}" whoami --show-server 2>/dev/null | tr -d ' ' || true)
-        namespace=$("${oc_bin}" config view --minify -o jsonpath='{..namespace}' 2>/dev/null || echo default)
-        token=$("${oc_bin}" whoami -t 2>/dev/null || true)
-        if [ -z "${token}" ] && [ -n "${OCP_TOKEN}" ]; then
-            rlLog "No local token; attempting login with OCP_TOKEN"
-            rlRun "${oc_bin} login --token='${OCP_TOKEN}' --server='${api_host_port}'" 0-255 "oc login (external env)" || true
-            token=$("${oc_cmd[@]}" whoami -t 2>/dev/null || true)
-        fi
-    fi
-
-    # For CRC/external + in-cluster, still enforce token presence
-    if [ -z "$token" ]; then
-        rlDie "Failed to retrieve token."
-        return 1
-    fi
-
-    rlLog "Auth success: api=${api_host_port:-<none>}, namespace=${namespace:-default}, token_prefix=${token:0:8}..."
-    echo "API_HOST_PORT=${api_host_port}"
-    echo "DEFAULT_TOKEN=${token}"
-    echo "NAMESPACE=${namespace:-default}"
-    return 0
-}
-
-# --- MAIN TEST ----------------------------------------------------------------
 rlJournalStart
+    rlPhaseStartSetup
+        if [ -z "${OPERATOR_NAME}" ];
+        then
+            OPERATOR_NAME=tang-operator
+        fi
+        rlRun 'rlImport "common-cloud-orchestration/ocpop-lib"' || rlDie "cannot import ocpop lib"
+        rlRun ". ../../TestHelpers/functions.sh" || rlDie "cannot import function script"
+        TO_DAST_POD_COMPLETED=300 #seconds (DAST lasts around 120 seconds)
+        TO_RAPIDAST=30 #seconds to wait for Rapidast container to appear
+        if ! command -v helm &> /dev/null; then
+            ARCH=$(case $(uname -m) in x86_64) echo -n amd64 ;; aarch64) echo -n arm64 ;; *) echo -n "$(uname -m)" ;; esac)
+            OS=$(uname | awk '{print tolower($0)}')
+            #download latest helm
+            LATEST_RELEASE_TAG=$(curl -s https://api.github.com/repos/helm/helm/releases/latest | jq -r '.tag_name')
+            RELEASE_URL="https://get.helm.sh/helm-${LATEST_RELEASE_TAG}-${OS}-${ARCH}.tar.gz"
+            TAR_FILE="helm-${LATEST_RELEASE_TAG}-${OS}-${ARCH}.tar.gz"
+            rlRun "curl -LO $RELEASE_URL"
+            rlRun "tar -xzf $TAR_FILE"
+            rlRun "mv ${OS}-${ARCH}/helm /usr/local/bin/helm"
+        fi
+    rlPhaseEnd
 
-rlPhaseStartSetup
-    OPERATOR_NAME=${OPERATOR_NAME:-tang-operator}
-    rlRun 'rlImport "common-cloud-orchestration/ocpop-lib"' || rlDie "cannot import ocpop lib"
-    rlRun ". ../../TestHelpers/functions.sh" || rlDie "cannot import function script"
+    ############# DAST TESTS ##############
+    rlPhaseStartTest "Dynamic Application Security Testing"
+        # 1 - Log helm version
+        ocpopLogVerbose "$(helm version)"
 
-    TO_DAST_POD_COMPLETED=${TO_DAST_POD_COMPLETED:-300}
-    TO_RAPIDAST=${TO_RAPIDAST:-30}
+        # 2 - clone rapidast code (development branch)
+        tmpdir=$(mktemp -d)
+        pushd "${tmpdir}" && git clone https://github.com/RedHatProductSecurity/rapidast.git -b development || exit
 
-    if ! command -v helm &>/dev/null; then
-        ARCH=$(case "$(uname -m)" in x86_64) echo amd64 ;; aarch64) echo arm64 ;; *) uname -m ;; esac)
-        OS=$(uname | tr '[:upper:]' '[:lower:]')
-        LATEST_RELEASE_TAG=$(curl -s https://api.github.com/repos/helm/helm/releases/latest | jq -r '.tag_name')
-        rlRun "curl -LO https://get.helm.sh/helm-${LATEST_RELEASE_TAG}-${OS}-${ARCH}.tar.gz" 0 "Download helm"
-        rlRun "tar -xzf helm-${LATEST_RELEASE_TAG}-${OS}-${ARCH}.tar.gz" 0 "Unpack helm"
-        rlRun "mv ${OS}-${ARCH}/helm /usr/local/bin/helm" 0 "Move helm to /usr/local/bin"
-    fi
-rlPhaseEnd
+        # 3 - download configuration file template
+        # WARNING: if tang-operator is changed to OpenShift organization, change this
+        if [ -z "${KONFLUX}" ];
+        then
+            rlRun "curl -o tang_operator.yaml https://raw.githubusercontent.com/latchset/tang-operator/main/tools/scan_tools/tang_operator_template.yaml"
+        else
+            rlRun "curl -o tang_operator.yaml https://raw.githubusercontent.com/openshift/nbde-tang-server/main/tools/scan_tools/tang_operator_template.yaml"
+        fi
 
-############# DAST TESTS ##############
-rlPhaseStartTest "Dynamic Application Security Testing"
+        # 4 - adapt configuration file template (token, machine)
+        if [ "${EXECUTION_MODE}" == "CLUSTER" ]; then
+            API_HOST_PORT=$(minikube ip)
+            DEFAULT_TOKEN="TEST_TOKEN_UNREQUIRED_IN_EPHEMERAL"
+        else
+            # Ensure user is logged in
+            if ! oc whoami &>/dev/null; then
+                rlLog "Not logged in, attempting to login using service account..."
+                if [ -n "${OCP_TOKEN}" ]; then
+                    rlRun "oc login --token=${OCP_TOKEN} --server=${OC_CLIENT}" || rlDie "Cannot login to OCP"
+                else
+                    rlDie "No valid token to login, please provide OCP_TOKEN"
+                fi
+            fi
 
-    # Adjust ephemeral kubeconfig if needed
-    if [ -z "${KUBECONFIG}" ] && [ -d "/credentials" ]; then
-        KUBECONFIG_FILE=$(find "/credentials" -name "cluster-*-kubeconfig" | head -n 1)
-        [ -n "${KUBECONFIG_FILE}" ] && export KUBECONFIG="${KUBECONFIG_FILE}" && rlLog "Exported ephemeral kubeconfig ${KUBECONFIG}"
-    fi
+            API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d ' ')
 
-    # 1 - Log helm version
-    rlRun "helm version" 0 "Helm version"
+            DEFAULT_TOKEN=$(oc whoami -t)
+            if [ -z "${DEFAULT_TOKEN}" ]; then
+                DEFAULT_TOKEN=$(ocpopPrintTokenFromConfiguration)
+            fi
+            if [ -z "${DEFAULT_TOKEN}" ]; then
+                # fallback: get token from operator secrets
+                DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" \
+                    "$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" | grep ^${OPERATOR_NAME} | grep service-account | awk '{print $1}')" \
+                    -o json | jq -Mr '.data.token' | base64 -d)
+            fi
+        fi
 
-    # 2 - clone rapidast repo
-    tmpdir=$(mktemp -d)
-    trap "rm -rf '${tmpdir}'" EXIT
-    rlRun "pushd ${tmpdir} >/dev/null && git clone https://github.com/RedHatProductSecurity/rapidast.git -b development || true; popd >/dev/null" 0 "Clone Rapidast repo"
-    pushd "${tmpdir}/rapidast" >/dev/null || rlDie "Cannot enter rapidast dir"
+        echo "API_HOST_PORT=${API_HOST_PORT}"
+        echo "DEFAULT_TOKEN=${DEFAULT_TOKEN}"
 
-    # 3 - download configuration file template
-    if [ -z "${KONFLUX}" ]; then
-        rlRun "curl -sSfL -o tang_operator.yaml https://raw.githubusercontent.com/latchset/tang-operator/main/tools/scan_tools/tang_operator_template.yaml" 0 "Fetch tang_operator.yaml template (latchset)"
-    else
-        rlRun "curl -sSfL -o tang_operator.yaml https://raw.githubusercontent.com/openshift/nbde-tang-server/main/tools/scan_tools/tang_operator_template.yaml" 0 "Fetch tang_operator.yaml template (openshift)"
-    fi
+        # Replace placeholders in YAML
+        sed -i s@API_HOST_PORT_HERE@"${API_HOST_PORT}"@g tang_operator.yaml
+        sed -i s@AUTH_TOKEN_HERE@"${DEFAULT_TOKEN}"@g tang_operator.yaml
+        sed -i s@OPERATOR_NAMESPACE_HERE@"${OPERATOR_NAMESPACE}"@g tang_operator.yaml
 
-    # 4 - determine auth & API server
-    eval "$(ocpopGetAuth)" || rlDie "ocpopGetAuth failed"
-    API_HOST_PORT="${API_HOST_PORT:-${API_HOST_PORT}}"
-    DEFAULT_TOKEN="${DEFAULT_TOKEN:-${DEFAULT_TOKEN}}"
-    OPERATOR_NS="${OPERATOR_NAMESPACE:-${NAMESPACE:-default}}"
-    rlLog "API=${API_HOST_PORT:-<none>} | NS=${OPERATOR_NS} | Token prefix=${DEFAULT_TOKEN:0:6}..."
-    rlAssertNotEquals "API_HOST_PORT must not be empty" "${API_HOST_PORT}" ""
-    rlAssertNotEquals "DEFAULT_TOKEN must not be empty" "${DEFAULT_TOKEN}" ""
+rlAssertNotEquals "Checking token not empty" "${DEFAULT_TOKEN}" ""
 
-    # Replace placeholders in YAML (using sed directly)
-    sed -i s@API_HOST_PORT_HERE@"${API_HOST_PORT}"@g tang_operator.yaml
-    sed -i s@AUTH_TOKEN_HERE@"${DEFAULT_TOKEN}"@g tang_operator.yaml
-    sed -i s@OPERATOR_NAMESPACE_HERE@"${OPERATOR_NS}"@g tang_operator.yaml
-    grep -q "HERE" tang_operator.yaml && rlDie "Template placeholders not replaced!"
+        # 5 - adapt helm
+        pushd rapidast || exit
+        sed -i s@"kubectl --kubeconfig=./kubeconfig "@"${OC_CLIENT} "@g helm/results.sh
+        sed -i s@"secContext: '{}'"@"secContext: '{\"privileged\": true}'"@ helm/chart/values.yaml
+        sed -i s@'tag: "latest"'@'tag: "2.8.0"'@g helm/chart/values.yaml
 
-    # 5 - adapt helm chart
-    sed -i s@"kubectl --kubeconfig=./kubeconfig "@"${OC_CLIENT} "@g helm/results.sh
-    sed -i s@"secContext: '{}'"@"secContext: '{\"privileged\": true}'"@ helm/chart/values.yaml
-    sed -i s@'tag: "latest"'@'tag: "2.8.0"'@g helm/chart/values.yaml
+        # 6 - run rapidast on adapted configuration file (via helm)
+        helm uninstall rapidast
+        rlRun -c "helm install rapidast ./helm/chart/ --set-file rapidastConfig=${tmpdir}/tang_operator.yaml 2>/dev/null" 0 "Installing rapidast helm chart"
+        pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "default" "${TO_RAPIDAST}" 1)
+        rlRun "ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} default ${pod_name}" 0 "Checking POD ${pod_name} in Completed state [Timeout=${TO_DAST_POD_COMPLETED} secs.]"
 
-    # 6 - install rapidast
-    helm uninstall rapidast --namespace default || true
-    rlRun -c "helm install rapidast ./helm/chart/ --set-file rapidastConfig=${tmpdir}/tang_operator.yaml 2>/dev/null" 0 "Installing rapidast helm chart"
-    pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "default" "${TO_RAPIDAST}" 1)
-    rlRun "ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} default ${pod_name}" 0 "Checking POD ${pod_name} in Completed state [Timeout=${TO_DAST_POD_COMPLETED} secs.]"
+        # 7 - extract results
+        rlRun -c "bash ./helm/results.sh 2>/dev/null" 0 "Extracting DAST results"
 
-    # 7 - extract results
-    rlRun -c "bash ./helm/results.sh 2>/dev/null" 0 "Extracting DAST results"
+        # 8 - parse results (do not have to ensure no previous results exist, as this is a temporary directory)
+        # Check no alarm exist ...
+        report_dir=$(ls -1d "${tmpdir}"/rapidast/tangservers/DAST*tangservers/ | head -1 | sed -e 's@/$@@g')
+        ocpopLogVerbose "REPORT DIR:${report_dir}"
 
-    # 8 - cleanup
-    helm uninstall rapidast --namespace default || true
-    oc delete ns default --ignore-not-found || true
-    popd >/dev/null || true
-    popd >/dev/null || true
+        rlAssertNotEquals "Checking report_dir not empty" "${report_dir}" ""
 
-rlPhaseEnd
-############# /DAST TESTS #############
+        report_file="${report_dir}/zap/zap-report.json"
+        ocpopLogVerbose "REPORT FILE:${report_file}"
+
+        if [ -n "${report_dir}" ] && [ -f "${report_file}" ];
+        then
+            alerts=$(jq '.site[0].alerts | length' < "${report_dir}/zap/zap-report.json" )
+            ocpopLogVerbose "Alerts:${alerts}"
+            for ((alert=0; alert<alerts; alert++));
+            do
+                risk_desc=$(jq ".site[0].alerts[${alert}].riskdesc" < "${report_dir}/zap/zap-report.json" | awk '{print $1}' | tr -d '"' | tr -d " ")
+                rlLog "Alert[${alert}] -> Priority:[${risk_desc}]"
+                rlAssertNotEquals "Checking alarm is not High Risk" "${risk_desc}" "High"
+            done
+            if [ "${alerts}" != "0" ];
+            then
+                rlLogWarning "A total of [${alerts}] alerts were detected! Please, review ZAP report: ${report_dir}/zap/zap-report.json"
+            else
+                rlLog "No alerts detected"
+            fi
+        else
+            rlLogWarning "Report file:${report_dir}/zap/zap-report.json does not exist"
+        fi
+
+        # 9 - clean helm installation
+        helm uninstall rapidast
+
+        # 10 - return
+        popd || exit
+        popd || exit
+
+    rlPhaseEnd
+    ############# /DAST TESTS #############
 
 rlJournalPrintText
 rlJournalEnd
