@@ -98,9 +98,12 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     rlLog "Operator namespace: ${OPERATOR_NAMESPACE}"
 
     # Always fetch the latest template
-    curl -sSfL -o tang_operator.yaml \
-        https://raw.githubusercontent.com/openshift/nbde-tang-server/main/tools/scan_tools/tang_operator_template.yaml \
-        || rlDie "Failed to fetch tang_operator.yaml template"
+    rlRun -c "curl -sSfL -o tang_operator.yaml \
+        https://raw.githubusercontent.com/openshift/nbde-tang-server/main/tools/scan_tools/tang_operator_template.yaml" \
+        0 "Fetching tang_operator.yaml template"
+    
+    # Store the absolute path of the configuration file before changing directories.
+    tang_config_path=$(pwd)/tang_operator.yaml
 
     # Replace placeholders in tang_operator.yaml
     sed -i "s@API_HOST_PORT_HERE@${API_HOST_PORT}@g" tang_operator.yaml
@@ -120,11 +123,11 @@ rlPhaseStartTest "Dynamic Application Security Testing"
 
     : "${oc_client:=oc}"
 
-    # Install Rapidast Helm chart locally
+    # Install Rapidast Helm chart using the absolute path
     rlRun -c "helm install rapidast ./helm/chart/ \
         --namespace \"${RAPIDAST_NS}\" \
         --create-namespace \
-        --set-file rapidastConfig=${OLDPWD}/tang_operator.yaml" \
+        --set-file rapidastConfig=${tang_config_path}" \
         0 "Installing rapidast helm chart"
 
     pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "${RAPIDAST_NS}" "${TO_RAPIDAST}" 1)
