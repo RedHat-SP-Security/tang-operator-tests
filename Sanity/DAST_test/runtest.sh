@@ -161,12 +161,6 @@ rlPhaseStartTest "Dynamic Application Security Testing"
 
     helm uninstall rapidast || true
 
-    # Clean up ephemeral RBAC only if it was created
-    if [ -z "${KUBECONFIG_CONTENT}" ]; then
-        rlRun "${OC_CLIENT} delete clusterrole daster" || true
-        rlRun "${OC_CLIENT} delete clusterrolebinding daster-binding" || true
-    fi
-
     popd || exit
     popd || exit
 
