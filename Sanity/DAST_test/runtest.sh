@@ -90,16 +90,22 @@ rlJournalStart
             sleep 5 # Wait for RBAC to propagate
 
             # Try new oc first, then fallback
-            if DEFAULT_TOKEN=$("${OC_CLIENT}" create token "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" 2>/dev/null); then
-                :
-            else
-                rlLog "Falling back to 'oc sa get-token'..."
-                DEFAULT_TOKEN=$("${OC_CLIENT}" sa get-token "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" 2>/dev/null || true)
-                if [ -z "${DEFAULT_TOKEN}" ]; then
-                    rlLog "Falling back to extracting token from secret..."
-                    DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" \
-                        $("${OC_CLIENT}" get sa "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" -o jsonpath='{.secrets[0].name}') \
-                        -o jsonpath='{.data.token}' | base64 -d)
+            DEFAULT_TOKEN=$("${OC_CLIENT}" sa get-token "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" 2>/dev/null || true)
+
+            # If still empty, try new oc create token (in case newer oc is available)
+            if [ -z "${DEFAULT_TOKEN}" ]; then
+                if "${OC_CLIENT}" create token --help >/dev/null 2>&1; then
+                    rlLog "Trying 'oc create token'..."
+                    DEFAULT_TOKEN=$("${OC_CLIENT}" create token "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" 2>/dev/null || true)
+                fi
+            fi
+
+            # Fallback: extract directly from the SA secret
+            if [ -z "${DEFAULT_TOKEN}" ]; then
+                rlLog "Falling back to extracting token from secret..."
+                sa_secret=$("${OC_CLIENT}" get sa "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
+                if [ -n "${sa_secret}" ]; then
+                    DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" "${sa_secret}" -o jsonpath='{.data.token}' | base64 -d)
                 fi
             fi
 
