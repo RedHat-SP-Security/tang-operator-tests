@@ -55,8 +55,6 @@ rlJournalStart
         fi
     rlPhaseEnd
     
-    -------------
-
     ############# DAST TESTS ##############
     rlPhaseStartTest "Dynamic Application Security Testing"
         ocpopLogVerbose "$(helm version)"
@@ -72,66 +70,44 @@ rlJournalStart
         fi
 
         ############################################################################
-        # Determine API host
+        # Determine API host and get token based on environment capabilities
         ############################################################################
         API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d ' ')
         rlLog "API_HOST_PORT determined: ${API_HOST_PORT}"
 
         ############################################################################
-        # Authenticate and set up RBAC
+        # Token acquisition / authentication
         ############################################################################
-        DEFAULT_TOKEN=""
-        
-        if [ -n "${KONFLUX}" ]; then
-            # Ephemeral Pipeline Logic
-            rlLog "Konflux pipeline detected. Using a placeholder token and relying on existing kubeconfig for pod authentication."
-            DEFAULT_TOKEN="TOKEN_DOESNT_NEED_IN_EPHEMERAL"
+        DEFAULT_TOKEN=$("${OC_CLIENT}" whoami -t 2>/dev/null || true)
 
-            # Create service account and RBAC for the DAST pod
-            rlLog "Checking for service account ${OPERATOR_NAME} in namespace ${OPERATOR_NAMESPACE}..."
-            if ! "${OC_CLIENT}" get sa "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" &>/dev/null; then
-                rlLog "Service account ${OPERATOR_NAME} not found. Creating it now."
-                rlRun "${OC_CLIENT} create sa ${OPERATOR_NAME} -n ${OPERATOR_NAMESPACE}"
-            fi
+        if [ -z "${DEFAULT_TOKEN}" ]; then
+            rlLog "oc whoami -t failed, trying other methods."
 
-            rlLog "Creating ClusterRole and ClusterRoleBinding for the DAST scan."
-            rlRun "${OC_CLIENT} create clusterrole daster --verb=get,list --resource=pods,services,ingresses,deployments" || true
-            rlRun "${OC_CLIENT} create clusterrolebinding daster-binding --clusterrole=daster --serviceaccount=${OPERATOR_NAMESPACE}:${OPERATOR_NAME}" || true
-            rlRun "sleep 5"
+            # Try modern oc create token
+            DEFAULT_TOKEN=$("${OC_CLIENT}" create token "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" 2>/dev/null || true)
+        fi
 
-        else
-            # CRC Pipeline Logic
-            rlLog "Non-Konflux pipeline detected. Retrieving an actual token."
-
-            # Create SA and RBAC (necessary for both pipelines)
-            rlLog "Checking for service account ${OPERATOR_NAME} in namespace ${OPERATOR_NAMESPACE}..."
-            if ! "${OC_CLIENT}" get sa "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" &>/dev/null; then
-                rlLog "Service account ${OPERATOR_NAME} not found. Creating it now."
-                rlRun "${OC_CLIENT} create sa ${OPERATOR_NAME} -n ${OPERATOR_NAMESPACE}"
-            fi
-
-            rlLog "Creating ClusterRole and ClusterRoleBinding for the DAST scan."
-            rlRun "${OC_CLIENT} create clusterrole daster --verb=get,list --resource=pods,services,ingresses,deployments" || true
-            rlRun "${OC_CLIENT} create clusterrolebinding daster-binding --clusterrole=daster --serviceaccount=${OPERATOR_NAMESPACE}:${OPERATOR_NAME}" || true
-            rlRun "sleep 5"
-
-            # Get a valid token for the CRC pipeline
-            DEFAULT_TOKEN=$("${OC_CLIENT}" whoami -t 2>/dev/null || true)
-            if [ -z "${DEFAULT_TOKEN}" ]; then
-                rlLog "No token found via 'oc whoami -t'. Falling back to creating one."
-                DEFAULT_TOKEN=$("${OC_CLIENT}" create token "${OPERATOR_NAME}" --namespace="${OPERATOR_NAMESPACE}" 2>/dev/null || true)
-            fi
-
-            # Final check to ensure we got a token
-            if [ -z "${DEFAULT_TOKEN}" ]; then
-                rlDie "Failed to acquire a valid token for the CRC pipeline."
+        if [ -z "${DEFAULT_TOKEN}" ]; then
+            rlLog "oc create token failed, falling back to secret."
+            SECRET_NAME=$("${OC_CLIENT}" get sa "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
+            if [ -n "${SECRET_NAME}" ]; then
+                DEFAULT_TOKEN=$("${OC_CLIENT}" get secret "${SECRET_NAME}" -n "${OPERATOR_NAMESPACE}" -o jsonpath='{.data.token}' | base64 --decode || true)
             fi
         fi
 
-        echo "API_HOST_PORT=${API_HOST_PORT}"
-        echo "DEFAULT_TOKEN=${DEFAULT_TOKEN}"
+        # Final fallback for Konflux / ephemeral: use kubeconfig
+        if [ -z "${DEFAULT_TOKEN}" ] && [ -n "${KUBECONFIG_CONTENT}" ]; then
+            rlLog "Falling back to KUBECONFIG_CONTENT for ephemeral pipeline."
+            export KUBECONFIG=/tmp/kubeconfig.yaml
+            # Try base64 decode, fallback to plain text
+            echo "${KUBECONFIG_CONTENT}" | base64 -d 2>/dev/null > "${KUBECONFIG}" || echo "${KUBECONFIG_CONTENT}" > "${KUBECONFIG}"
+            rlRun "${OC_CLIENT} whoami" 0 "Verified cluster access via kubeconfig"
+            DEFAULT_TOKEN="TOKEN_NOT_USED_IN_KONFLUX"
+        fi
 
-        rlAssertNotEquals "Checking token not empty" "${DEFAULT_TOKEN}" ""
+        if [ -z "${DEFAULT_TOKEN}" ]; then
+            rlDie "Failed to acquire token or kubeconfig for DAST scan."
+        fi
 
         # Replace placeholders in YAML
         sed -i s@API_HOST_PORT_HERE@"${API_HOST_PORT}"@g tang_operator.yaml
@@ -178,10 +154,12 @@ rlJournalStart
 
         helm uninstall rapidast || true
 
-        # Clean up RBAC created for the test.
-        rlRun "${OC_CLIENT} delete clusterrole daster" || true
-        rlRun "${OC_CLIENT} delete clusterrolebinding daster-binding" || true
-        
+        # Clean up RBAC created for the test (only if real token was used)
+        if [ "${DEFAULT_TOKEN}" != "TOKEN_NOT_USED_IN_KONFLUX" ]; then
+            rlRun "${OC_CLIENT} delete clusterrole daster" || true
+            rlRun "${OC_CLIENT} delete clusterrolebinding daster-binding" || true
+        fi
+
         popd || exit
         popd || exit
 
