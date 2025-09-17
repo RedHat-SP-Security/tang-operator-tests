@@ -52,7 +52,7 @@ rlJournalStart
             rlRun "mv ${OS}-${ARCH}/helm /usr/local/bin/helm"
         fi
     rlPhaseEnd
-
+    
     -------------
 
     ############# DAST TESTS ##############
@@ -75,40 +75,60 @@ rlJournalStart
 
         # 4 - adapt configuration file template (token, machine)
 
-        # Get the API host and port.
-        API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d ' ')
-
-        # --- FIX: New, streamlined token retrieval logic. ---
-
-        # 1. Attempt to get token via `oc whoami -t`. This works with most
-        # modern setups and is the first preference.
-        DEFAULT_TOKEN=$(oc whoami -t)
-
-        # 2. If no token is found, try creating the SA and getting the token
-        # from its secret. This is for environments where `oc whoami -t`
-        # fails but cert-based auth is used.
-        if [ -z "${DEFAULT_TOKEN}" ]; then
+        if [ -n "${KONFLUX}" ]; then
+            # --- FIX: Handle the ephemeral pipeline with a specific logic. ---
+            # Ephemeral (Konflux) pipelines may not have a user token, so we create one for the SA.
+            API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d ' ')
+            
             rlLog "Checking for service account ${OPERATOR_NAME} in namespace ${OPERATOR_NAMESPACE}..."
             if ! "${OC_CLIENT}" get sa "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" &>/dev/null; then
                 rlLog "Service account ${OPERATOR_NAME} not found. Creating it now."
                 rlRun "${OC_CLIENT} create sa ${OPERATOR_NAME} -n ${OPERATOR_NAMESPACE}"
             fi
 
-            SERVICE_ACCOUNT_SECRET=$("${OC_CLIENT}" describe sa "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" | grep -E '^Tokens:' | awk '{print $2}')
-            if [ -z "${SERVICE_ACCOUNT_SECRET}" ]; then
-                SERVICE_ACCOUNT_SECRET=$("${OC_CLIENT}" describe sa "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" | grep -E '^token-' | awk '{print $1}')
-            fi
+            # --- FIX: Create RBAC permissions for the service account. ---
+            rlLog "Creating ClusterRole and ClusterRoleBinding for the DAST scan."
+            rlRun "${OC_CLIENT} create clusterrole daster --verb=get,list --resource=pods,services,ingresses,deployments"
+            rlRun "${OC_CLIENT} create clusterrolebinding daster-binding --clusterrole=daster --serviceaccount=${OPERATOR_NAMESPACE}:${OPERATOR_NAME}"
+            sleep 5 # Wait for RBAC to propagate
 
-            if [ -n "${SERVICE_ACCOUNT_SECRET}" ]; then
-                DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" "${SERVICE_ACCOUNT_SECRET}" -o json | jq -Mr '.data.token' | base64 -d)
+            DEFAULT_TOKEN=$("${OC_CLIENT}" create token "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}")
+
+            if [ -z "${DEFAULT_TOKEN}" ]; then
+                rlDie "Failed to acquire token for DAST scan in Konflux environment."
+            fi
+            # --- END FIX ---
+        else
+            # --- FIX: Handle CRC and other pipelines with a separate, simpler logic. ---
+            # CRC and similar pipelines should have an accessible token.
+            API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d ' ')
+            
+            # --- FIX: Create RBAC permissions for the service account. ---
+            rlLog "Checking for service account ${OPERATOR_NAME} in namespace ${OPERATOR_NAMESPACE}..."
+            if ! "${OC_CLIENT}" get sa "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" &>/dev/null; then
+                rlLog "Service account ${OPERATOR_NAME} not found. Creating it now."
+                rlRun "${OC_CLIENT} create sa ${OPERATOR_NAME} -n ${OPERATOR_NAMESPACE}"
+            fi
+            
+            rlLog "Creating ClusterRole and ClusterRoleBinding for the DAST scan."
+            rlRun "${OC_CLIENT} create clusterrole daster --verb=get,list --resource=pods,services,ingresses,deployments"
+            rlRun "${OC_CLIENT} create clusterrolebinding daster-binding --clusterrole=daster --serviceaccount=${OPERATOR_NAMESPACE}:${OPERATOR_NAME}"
+            sleep 5 # Wait for RBAC to propagate
+            # --- END FIX ---
+
+            # Get the token using the traditional method.
+            DEFAULT_TOKEN=$(oc whoami -t)
+            if [ -z "${DEFAULT_TOKEN}" ]; then
+                DEFAULT_TOKEN=$(ocpopPrintTokenFromConfiguration)
+            fi
+            if [ -z "${DEFAULT_TOKEN}" ]; then
+                # fallback: get token from operator secrets
+                DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" \
+                    "$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" | grep ^${OPERATOR_NAME} | grep service-account | awk '{print $1}')" \
+                    -o json | jq -Mr '.data.token' | base64 -d)
             fi
         fi
 
-        # 3. Final fallback to ocpop library.
-        if [ -z "${DEFAULT_TOKEN}" ]; then
-            DEFAULT_TOKEN=$(ocpopPrintTokenFromConfiguration)
-        fi
-        
         echo "API_HOST_PORT=${API_HOST_PORT}"
         echo "DEFAULT_TOKEN=${DEFAULT_TOKEN}"
 
@@ -164,12 +184,16 @@ rlJournalStart
 
         # 9 - clean helm installation
         helm uninstall rapidast
+        # Clean up RBAC created for the test
+        rlRun "${OC_CLIENT} delete clusterrole daster"
+        rlRun "${OC_CLIENT} delete clusterrolebinding daster-binding"
 
         # 10 - return
         popd || exit
         popd || exit
 
     rlPhaseEnd
+    
     -------------
     
 rlJournalPrintText
