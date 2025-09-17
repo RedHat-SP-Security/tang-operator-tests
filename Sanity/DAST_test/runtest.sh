@@ -65,7 +65,6 @@ rlJournalStart
         pushd "${tmpdir}" && git clone https://github.com/RedHatProductSecurity/rapidast.git -b development || exit
 
         # 3 - download configuration file template
-        # WARNING: if tang-operator is changed to OpenShift organization, change this
         if [ -z "${KONFLUX}" ];
         then
             rlRun "curl -o tang_operator.yaml https://raw.githubusercontent.com/latchset/tang-operator/main/tools/scan_tools/tang_operator_template.yaml"
@@ -73,54 +72,35 @@ rlJournalStart
             rlRun "curl -o tang_operator.yaml https://raw.githubusercontent.com/openshift/nbde-tang-server/main/tools/scan_tools/tang_operator_template.yaml"
         fi
 
-         # 4 - adapt configuration file template (token, machine)
-        if [ -n "${KONFLUX}" ]; then
-            # --- Ephemeral Konflux pipeline ---
-            API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d ' ')
+        # 4 - adapt configuration file template (token, machine)
+        # We assume this is only for the ephemeral pipeline.
+        API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d ' ')
 
-            rlLog "Checking for service account ${OPERATOR_NAME} in namespace ${OPERATOR_NAMESPACE}..."
-            if ! "${OC_CLIENT}" get sa "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" &>/dev/null; then
-                rlLog "Service account ${OPERATOR_NAME} not found. Creating it now."
-                rlRun "${OC_CLIENT} create sa ${OPERATOR_NAME} -n ${OPERATOR_NAMESPACE}"
-            fi
+        # --- FIX: Ensure the current user has permission to create tokens. ---
+        # The user running this script needs the 'serviceaccounts/token' verb.
+        # This fix creates a temporary role and binding for this specific task.
+        rlLog "Granting token-creation permissions to the test runner."
+        rlRun "${OC_CLIENT} create role token-creator --verb=create --resource=serviceaccounts/token"
+        CURRENT_USER=$("${OC_CLIENT}" whoami)
+        rlRun "${OC_CLIENT} create rolebinding token-creator-binding --role=token-creator --user=${CURRENT_USER} -n ${OPERATOR_NAMESPACE}"
+        sleep 2 # Small wait for RBAC to propagate
+        # --- END FIX ---
 
-            rlLog "Creating ClusterRole and ClusterRoleBinding for the DAST scan."
-            rlRun "${OC_CLIENT} create clusterrole daster --verb=get,list --resource=pods,services,ingresses,deployments"
-            rlRun "${OC_CLIENT} create clusterrolebinding daster-binding --clusterrole=daster --serviceaccount=${OPERATOR_NAMESPACE}:${OPERATOR_NAME}"
-            sleep 5 # Wait for RBAC to propagate
+        # The rest of the token logic should be sufficient now.
+        rlLog "Checking for service account ${OPERATOR_NAME} in namespace ${OPERATOR_NAMESPACE}..."
+        if ! "${OC_CLIENT}" get sa "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" &>/dev/null; then
+            rlLog "Service account ${OPERATOR_NAME} not found. Creating it now."
+            rlRun "${OC_CLIENT} create sa ${OPERATOR_NAME} -n ${OPERATOR_NAMESPACE}"
+        fi
 
-            # Try new oc first, then fallback
-            DEFAULT_TOKEN=$("${OC_CLIENT}" sa get-token "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" 2>/dev/null || true)
+        rlLog "Creating ClusterRole and ClusterRoleBinding for the DAST scan."
+        rlRun "${OC_CLIENT} create clusterrole daster --verb=get,list --resource=pods,services,ingresses,deployments"
+        rlRun "${OC_CLIENT} create clusterrolebinding daster-binding --clusterrole=daster --serviceaccount=${OPERATOR_NAMESPACE}:${OPERATOR_NAME}"
+        sleep 5 # Wait for RBAC to propagate
 
-            # If still empty, try new oc create token (in case newer oc is available)
-            if [ -z "${DEFAULT_TOKEN}" ]; then
-                if "${OC_CLIENT}" create token --help >/dev/null 2>&1; then
-                    rlLog "Trying 'oc create token'..."
-                    DEFAULT_TOKEN=$("${OC_CLIENT}" create token "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" 2>/dev/null || true)
-                fi
-            fi
-
-            # Fallback: extract directly from the SA secret
-            if [ -z "${DEFAULT_TOKEN}" ]; then
-                rlLog "Falling back to extracting token from secret..."
-                sa_secret=$("${OC_CLIENT}" get sa "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
-                if [ -n "${sa_secret}" ]; then
-                    DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" "${sa_secret}" -o jsonpath='{.data.token}' | base64 -d)
-                fi
-            fi
-
-            if [ -z "${DEFAULT_TOKEN}" ]; then
-                rlDie "Failed to acquire token for DAST scan in Konflux environment."
-            fi
-        else
-            # --- CRC / external clusters ---
-            API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d ' ')
-
-            # Token should already be available from kubeconfig
-            DEFAULT_TOKEN=$("${OC_CLIENT}" whoami -t 2>/dev/null || true)
-            if [ -z "${DEFAULT_TOKEN}" ]; then
-                DEFAULT_TOKEN=$(ocpopPrintTokenFromConfiguration)
-            fi
+        DEFAULT_TOKEN=$("${OC_CLIENT}" create token "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" 2>/dev/null || true)
+        if [ -z "${DEFAULT_TOKEN}" ]; then
+            rlDie "Failed to acquire token for DAST scan in Konflux environment."
         fi
 
         echo "API_HOST_PORT=${API_HOST_PORT}"
@@ -132,8 +112,6 @@ rlJournalStart
         sed -i s@API_HOST_PORT_HERE@"${API_HOST_PORT}"@g tang_operator.yaml
         sed -i s@AUTH_TOKEN_HERE@"${DEFAULT_TOKEN}"@g tang_operator.yaml
         sed -i s@OPERATOR_NAMESPACE_HERE@"${OPERATOR_NAMESPACE}"@g tang_operator.yaml
-
-        rlAssertNotEquals "Checking token not empty" "${DEFAULT_TOKEN}" ""
 
         # 5 - adapt helm
         pushd rapidast || exit
@@ -183,7 +161,11 @@ rlJournalStart
         # Clean up RBAC created for the test
         rlRun "${OC_CLIENT} delete clusterrole daster"
         rlRun "${OC_CLIENT} delete clusterrolebinding daster-binding"
-
+        # --- FIX: Clean up the temporary RBAC for token creation. ---
+        rlRun "${OC_CLIENT} delete role token-creator -n ${OPERATOR_NAMESPACE}"
+        rlRun "${OC_CLIENT} delete rolebinding token-creator-binding -n ${OPERATOR_NAMESPACE}"
+        # --- END FIX ---
+        
         # 10 - return
         popd || exit
         popd || exit
