@@ -32,18 +32,18 @@
 
 rlJournalStart
     rlPhaseStartSetup
-        if [ -z "${OPERATOR_NAME}" ];
-        then
+        if [ -z "${OPERATOR_NAME}" ]; then
             OPERATOR_NAME=tang-operator
         fi
         rlRun 'rlImport "common-cloud-orchestration/ocpop-lib"' || rlDie "cannot import ocpop lib"
         rlRun ". ../../TestHelpers/functions.sh" || rlDie "cannot import function script"
-        TO_DAST_POD_COMPLETED=300 #seconds (DAST lasts around 120 seconds)
-        TO_RAPIDAST=30 #seconds to wait for Rapidast container to appear
+
+        TO_DAST_POD_COMPLETED=300
+        TO_RAPIDAST=30
+
         if ! command -v helm &> /dev/null; then
             ARCH=$(case $(uname -m) in x86_64) echo -n amd64 ;; aarch64) echo -n arm64 ;; *) echo -n "$(uname -m)" ;; esac)
             OS=$(uname | awk '{print tolower($0)}')
-            #download latest helm
             LATEST_RELEASE_TAG=$(curl -s https://api.github.com/repos/helm/helm/releases/latest | jq -r '.tag_name')
             RELEASE_URL="https://get.helm.sh/helm-${LATEST_RELEASE_TAG}-${OS}-${ARCH}.tar.gz"
             TAR_FILE="helm-${LATEST_RELEASE_TAG}-${OS}-${ARCH}.tar.gz"
@@ -52,40 +52,27 @@ rlJournalStart
             rlRun "mv ${OS}-${ARCH}/helm /usr/local/bin/helm"
         fi
     rlPhaseEnd
-    
-    -------------
 
     ############# DAST TESTS ##############
     rlPhaseStartTest "Dynamic Application Security Testing"
-        # 1 - Log helm version
         ocpopLogVerbose "$(helm version)"
 
-        # 2 - clone rapidast code (development branch)
         tmpdir=$(mktemp -d)
         pushd "${tmpdir}" && git clone https://github.com/RedHatProductSecurity/rapidast.git -b development || exit
 
-        # 3 - download configuration file template
-        if [ -z "${KONFLUX}" ];
-        then
+        if [ -z "${KONFLUX}" ]; then
             rlRun "curl -o tang_operator.yaml https://raw.githubusercontent.com/latchset/tang-operator/main/tools/scan_tools/tang_operator_template.yaml"
         else
             rlRun "curl -o tang_operator.yaml https://raw.githubusercontent.com/openshift/nbde-tang-server/main/tools/scan_tools/tang_operator_template.yaml"
         fi
 
-        # 4 - adapt configuration file template (token, machine)
-        # We assume this is only for the ephemeral pipeline.
         API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d ' ')
 
         rlLog "Granting token-creation permissions to the test runner."
         rlRun "${OC_CLIENT} create role token-creator --verb=create --resource=serviceaccounts/token -n ${OPERATOR_NAMESPACE}"
-        CURRENT_USER=$("${OC_CLIENT}" whoami)
-        CURRENT_SA=$("${OC_CLIENT}" whoami --show-serviceaccount=true)
-        rlLog "Binding 'token-creator' role to user: ${CURRENT_USER} and service account: ${CURRENT_SA}"
-        rlRun "${OC_CLIENT} create rolebinding token-creator-binding-user --role=token-creator --user=${CURRENT_USER} -n ${OPERATOR_NAMESPACE}"
-        rlRun "${OC_CLIENT} create rolebinding token-creator-binding-sa --role=token-creator --serviceaccount=${OPERATOR_NAMESPACE}:${CURRENT_SA} -n ${OPERATOR_NAMESPACE}"
-        sleep 2 # Small wait for RBAC to propagate
+        rlRun "${OC_CLIENT} create rolebinding token-creator-binding-sa --role=token-creator --serviceaccount=${OPERATOR_NAMESPACE}:${OPERATOR_NAME} -n ${OPERATOR_NAMESPACE}"
+        sleep 2
 
-        # The rest of the token logic should be sufficient now.
         rlLog "Checking for service account ${OPERATOR_NAME} in namespace ${OPERATOR_NAMESPACE}..."
         if ! "${OC_CLIENT}" get sa "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" &>/dev/null; then
             rlLog "Service account ${OPERATOR_NAME} not found. Creating it now."
@@ -95,58 +82,56 @@ rlJournalStart
         rlLog "Creating ClusterRole and ClusterRoleBinding for the DAST scan."
         rlRun "${OC_CLIENT} create clusterrole daster --verb=get,list --resource=pods,services,ingresses,deployments"
         rlRun "${OC_CLIENT} create clusterrolebinding daster-binding --clusterrole=daster --serviceaccount=${OPERATOR_NAMESPACE}:${OPERATOR_NAME}"
-        sleep 5 # Wait for RBAC to propagate
+        sleep 5
 
+        # Token creation with fallback for older OC versions
         DEFAULT_TOKEN=$("${OC_CLIENT}" create token "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" 2>/dev/null || true)
+        if [ -z "${DEFAULT_TOKEN}" ]; then
+            # fallback: read token from secret
+            SECRET_NAME=$("${OC_CLIENT}" get sa "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" -o jsonpath='{.secrets[0].name}')
+            DEFAULT_TOKEN=$("${OC_CLIENT}" get secret "${SECRET_NAME}" -n "${OPERATOR_NAMESPACE}" -o jsonpath='{.data.token}' | base64 --decode)
+        fi
+
         if [ -z "${DEFAULT_TOKEN}" ]; then
             rlDie "Failed to acquire token for DAST scan in Konflux environment."
         fi
 
         echo "API_HOST_PORT=${API_HOST_PORT}"
         echo "DEFAULT_TOKEN=${DEFAULT_TOKEN}"
-
         rlAssertNotEquals "Checking token not empty" "${DEFAULT_TOKEN}" ""
 
-        # Replace placeholders in YAML
         sed -i s@API_HOST_PORT_HERE@"${API_HOST_PORT}"@g tang_operator.yaml
         sed -i s@AUTH_TOKEN_HERE@"${DEFAULT_TOKEN}"@g tang_operator.yaml
         sed -i s@OPERATOR_NAMESPACE_HERE@"${OPERATOR_NAMESPACE}"@g tang_operator.yaml
 
-        # 5 - adapt helm
         pushd rapidast || exit
         sed -i s@"kubectl --kubeconfig=./kubeconfig "@"${OC_CLIENT} "@g helm/results.sh
         sed -i s@"secContext: '{}'"@"secContext: '{\"privileged\": true}'"@ helm/chart/values.yaml
         sed -i s@'tag: "latest"'@'tag: "2.8.0"'@g helm/chart/values.yaml
 
-        # 6 - run rapidast on adapted configuration file (via helm)
         helm uninstall rapidast
         rlRun -c "helm install rapidast ./helm/chart/ --set-file rapidastConfig=${tmpdir}/tang_operator.yaml 2>/dev/null" 0 "Installing rapidast helm chart"
+
         pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "default" "${TO_RAPIDAST}" 1)
         rlRun "ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} default ${pod_name}" 0 "Checking POD ${pod_name} in Completed state [Timeout=${TO_DAST_POD_COMPLETED} secs.]"
 
-        # 7 - extract results
         rlRun -c "bash ./helm/results.sh 2>/dev/null" 0 "Extracting DAST results"
 
-        # Find the ZAP report file using a robust search.
         report_file=$(find "${tmpdir}" -name "zap-report.json" -type f | head -n 1)
         report_dir=$(dirname "${report_file}")
-        
+
         ocpopLogVerbose "REPORT FILE:${report_file}"
         ocpopLogVerbose "REPORT DIR:${report_dir}"
 
-        # 8 - parse results
-        if [ -n "${report_dir}" ] && [ -f "${report_file}" ];
-        then
+        if [ -n "${report_dir}" ] && [ -f "${report_file}" ]; then
             alerts=$(jq '.site[0].alerts | length' < "${report_file}" )
             ocpopLogVerbose "Alerts:${alerts}"
-            for ((alert=0; alert<alerts; alert++));
-            do
+            for ((alert=0; alert<alerts; alert++)); do
                 risk_desc=$(jq ".site[0].alerts[${alert}].riskdesc" < "${report_file}" | awk '{print $1}' | tr -d '"' | tr -d " ")
                 rlLog "Alert[${alert}] -> Priority:[${risk_desc}]"
                 rlAssertNotEquals "Checking alarm is not High Risk" "${risk_desc}" "High"
             done
-            if [ "${alerts}" != "0" ];
-            then
+            if [ "${alerts}" != "0" ]; then
                 rlLogWarning "A total of [${alerts}] alerts were detected! Please, review ZAP report: ${report_file}"
             else
                 rlLog "No alerts detected"
@@ -155,20 +140,19 @@ rlJournalStart
             rlLogWarning "Report file:${report_file} does not exist"
         fi
 
-        # 9 - clean helm installation
         helm uninstall rapidast
 
         if [ -n "${KONFLUX}" ]; then
             rlRun "${OC_CLIENT} delete clusterrole daster"
             rlRun "${OC_CLIENT} delete clusterrolebinding daster-binding"
             rlRun "${OC_CLIENT} delete role token-creator -n ${OPERATOR_NAMESPACE}"
-            rlRun "${OC_CLIENT} delete rolebinding token-creator-binding -n ${OPERATOR_NAMESPACE}"
+            rlRun "${OC_CLIENT} delete rolebinding token-creator-binding-sa -n ${OPERATOR_NAMESPACE}"
         fi
-        # 10 - return
+
         popd || exit
         popd || exit
 
     rlPhaseEnd
-    
+
 rlJournalPrintText
 rlJournalEnd
