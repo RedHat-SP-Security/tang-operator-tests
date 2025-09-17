@@ -71,160 +71,84 @@ rlJournalStart
             rlRun "curl -o tang_operator.yaml https://raw.githubusercontent.com/openshift/nbde-tang-server/main/tools/scan_tools/tang_operator_template.yaml"
         fi
 
-        # Common: determine API host
+        ############################################################################
+        # Determine API host
+        ############################################################################
         API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d ' ')
         rlLog "API_HOST_PORT determined: ${API_HOST_PORT}"
 
         ############################################################################
-        # KONFLUX (ephemeral) branch: try kubeconfig-based token extraction first
+        # Ensure SA, RBAC and token acquisition
         ############################################################################
+        # Ensure operator SA exists
+        rlLog "Checking for service account ${OPERATOR_NAME} in namespace ${OPERATOR_NAMESPACE}..."
+        if ! "${OC_CLIENT}" get sa "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" &>/dev/null; then
+            rlLog "Service account ${OPERATOR_NAME} not found. Creating it now."
+            rlRun "${OC_CLIENT}" create sa ${OPERATOR_NAME} -n "${OPERATOR_NAMESPACE}" || true
+        fi
+
+        # Grant per-namespace permission to create tokens
+        rlLog "Granting token-creation permissions to the service account."
+        rlRun "${OC_CLIENT} create role token-creator --verb=create --resource=serviceaccounts/token -n ${OPERATOR_NAMESPACE}" || true
+        rlRun "${OC_CLIENT} create rolebinding token-creator-binding-sa --role=token-creator --serviceaccount=${OPERATOR_NAMESPACE}:${OPERATOR_NAME} -n ${OPERATOR_NAMESPACE}" || true
+
+        # Create cluster-level RBAC required by DAST
+        rlLog "Creating ClusterRole and ClusterRoleBinding for the DAST scan."
+        rlRun "${OC_CLIENT} create clusterrole daster --verb=get,list --resource=pods,services,ingresses,deployments" || true
+        rlRun "${OC_CLIENT} create clusterrolebinding daster-binding --clusterrole=daster --serviceaccount=${OPERATOR_NAMESPACE}:${OPERATOR_NAME}" || true
+        sleep 5
+
+        ############################################################################
+        # Token acquisition
+        ############################################################################
+        DEFAULT_TOKEN=""
+
         if [ -n "${KONFLUX}" ]; then
-            rlLog "Konflux branch: attempting to use injected kubeconfig (preferred) to obtain token."
-
-            # OPERATOR_NAMESPACE must be set for KONFLUX
-            if [ -z "${OPERATOR_NAMESPACE}" ]; then
-                rlDie "OPERATOR_NAMESPACE must be set for KONFLUX runs"
-            fi
-
-            # Attempt to find an injected kubeconfig:
-            #  - allow override with KUBECONFIG_PATH env var if set
-            #  - otherwise try common Tekton path(s) (examples from your logs)
-            KUBECONFIG_PATH=""
-            if [ -n "${KUBECONFIG_PATH_OVERRIDE}" ]; then
-                KUBECONFIG_PATH="${KUBECONFIG_PATH_OVERRIDE}"
-            elif [ -n "${KUBECONFIG}" ]; then
-                # if CI already exports KUBECONFIG, use it
-                KUBECONFIG_PATH="${KUBECONFIG}"
-            else
-                # try common Tekton path pattern. There may be multiple; prefer the one present.
-                for p in /credentials/*-kubeconfig /tekton/creds/*kubeconfig /workspace/creds/*-kubeconfig; do
-                    if [ -f "${p}" ]; then
-                        KUBECONFIG_PATH="${p}"
-                        break
-                    fi
-                done
-            fi
-
-            if [ -n "${KUBECONFIG_PATH}" ] && [ -f "${KUBECONFIG_PATH}" ]; then
-                rlLog "Found kubeconfig at: ${KUBECONFIG_PATH} — exporting KUBECONFIG and trying to read token."
-                export KUBECONFIG="${KUBECONFIG_PATH}"
-            else
-                rlLog "No injected kubeconfig found in common locations. Will still attempt other token acquisition methods."
-            fi
-
-            # Ensure operator SA exists (we need it for RBAC)
-            rlLog "Checking for service account ${OPERATOR_NAME} in namespace ${OPERATOR_NAMESPACE}..."
-            if ! "${OC_CLIENT}" get sa "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" &>/dev/null; then
-                rlLog "Service account ${OPERATOR_NAME} not found. Creating it now."
-                rlRun "${OC_CLIENT} create sa ${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" || true
-            fi
-
-            # Grant per-namespace permission to create tokens for serviceaccounts (role + binding to SA)
-            rlLog "Granting token-creation permissions to the service account (role + binding)."
-            rlRun "${OC_CLIENT} create role token-creator --verb=create --resource=serviceaccounts/token -n ${OPERATOR_NAMESPACE}" || true
-            rlRun "${OC_CLIENT} create rolebinding token-creator-binding-sa --role=token-creator --serviceaccount=${OPERATOR_NAMESPACE}:${OPERATOR_NAME} -n ${OPERATOR_NAMESPACE}" || true
-
-            # Create cluster-level RBAC required by scan
-            rlLog "Creating ClusterRole and ClusterRoleBinding for the DAST scan."
-            rlRun "${OC_CLIENT} create clusterrole daster --verb=get,list --resource=pods,services,ingresses,deployments" || true
-            rlRun "${OC_CLIENT} create clusterrolebinding daster-binding --clusterrole=daster --serviceaccount=${OPERATOR_NAMESPACE}:${OPERATOR_NAME}" || true
-
-            sleep 2 # small propagation wait
-
-            DEFAULT_TOKEN=""
-            rlLog "Attempting token acquisition for SA ${OPERATOR_NAME} in ${OPERATOR_NAMESPACE} (robust steps)."
-
-            # Step A: if we have a kubeconfig, try oc --kubeconfig whoami -t to get token
+            # 1. Try kubeconfig token
             if [ -n "${KUBECONFIG}" ] && [ -f "${KUBECONFIG}" ]; then
-                rlLog "Trying: oc --kubeconfig=${KUBECONFIG} whoami -t ..."
+                rlLog "Attempting to acquire token via kubeconfig..."
                 DEFAULT_TOKEN=$("${OC_CLIENT}" --kubeconfig="${KUBECONFIG}" whoami -t 2>/dev/null || true)
-                if [ -n "${DEFAULT_TOKEN}" ]; then
-                    rlLog "Acquired token from kubeconfig using oc whoami -t."
-                else
-                    rlLog "oc whoami -t with kubeconfig did not return a token."
-                fi
             fi
 
-            # Step B: Try serviceaccount helpers (sa get-token)
+            # 2. Fallback: serviceaccount token
             if [ -z "${DEFAULT_TOKEN}" ]; then
-                rlLog "Trying: oc sa get-token ${OPERATOR_NAME} ..."
+                rlLog "Attempting to acquire token via 'oc sa get-token'..."
                 DEFAULT_TOKEN=$("${OC_CLIENT}" sa get-token "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" 2>/dev/null || true)
-                if [ -n "${DEFAULT_TOKEN}" ]; then
-                    rlLog "Acquired token using 'oc sa get-token'."
+            fi
+
+            # 3. Fallback: secret extraction
+            if [ -z "${DEFAULT_TOKEN}" ]; then
+                rlLog "Falling back to SA secret extraction..."
+                SECRET_NAME=$("${OC_CLIENT}" get sa "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
+                if [ -n "${SECRET_NAME}" ]; then
+                    DEFAULT_TOKEN=$("${OC_CLIENT}" get secret "${SECRET_NAME}" -n "${OPERATOR_NAMESPACE}" -o jsonpath='{.data.token}' | base64 --decode || true)
                 fi
             fi
 
-            # Step C: If oc create token exists, use it (newer oc)
+            # 4. Last resort placeholder
             if [ -z "${DEFAULT_TOKEN}" ]; then
-                if "${OC_CLIENT}" create token --help >/dev/null 2>&1; then
-                    rlLog "Trying: oc create token ${OPERATOR_NAME} ..."
-                    DEFAULT_TOKEN=$("${OC_CLIENT}" create token "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" 2>/dev/null || true)
-                    if [ -n "${DEFAULT_TOKEN}" ]; then
-                        rlLog "Acquired token using 'oc create token'."
-                    fi
-                else
-                    rlLog "'oc create token' not present in this oc client; skipping."
-                fi
-            fi
-
-            # Step D: fallback to SA secret extraction — wait for secret and extract token
-            if [ -z "${DEFAULT_TOKEN}" ]; then
-                rlLog "Falling back to extracting token from SA secret (polling up to 60s)..."
-                secret_name=""
-                tries=0
-                while [ $tries -lt 12 ]; do
-                    secret_name=$("${OC_CLIENT}" get sa "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
-                    if [ -n "${secret_name}" ]; then
-                        rlLog "Found SA secret: ${secret_name}"
-                        break
-                    fi
-                    tries=$((tries+1))
-                    sleep 5
-                done
-
-                if [ -n "${secret_name}" ]; then
-                    token_b64=$("${OC_CLIENT}" get secret "${secret_name}" -n "${OPERATOR_NAMESPACE}" -o jsonpath='{.data.token}' 2>/dev/null || true)
-                    if [ -n "${token_b64}" ]; then
-                        DEFAULT_TOKEN=$(printf "%s" "${token_b64}" | base64 --decode || true)
-                        rlLog "Extracted token from secret."
-                    else
-                        rlLog "Secret exists but no '.data.token' — cluster may be using projected tokens. Continue to next fallback."
-                    fi
-                else
-                    rlLog "No SA secret appeared within wait window."
-                fi
-            fi
-
-            # Step E: last resort (explicit placeholder) — we try to avoid this and log heavy warning
-            if [ -z "${DEFAULT_TOKEN}" ]; then
-                rlLog "WARNING: All token acquisition methods failed for Konflux. Using placeholder token as last resort."
+                rlLog "WARNING: Using placeholder token for ephemeral Konflux cluster."
                 DEFAULT_TOKEN="TOKEN_DOESNT_NEED_IN_EPHEMERAL"
             fi
 
         else
-            ############################################################################
-            # CRC / external clusters: keep original logic untouched
-            ############################################################################
-            rlLog "Non-KONFLUX pipeline: using existing kubeconfig token/credentials."
+            # CRC / persistent cluster: try 'oc create token' first
+            rlLog "Persistent cluster: acquiring token via 'oc create token'..."
+            DEFAULT_TOKEN=$("${OC_CLIENT}" create token "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" 2>/dev/null || true)
 
-            API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d ' ')
-            DEFAULT_TOKEN=$("${OC_CLIENT}" whoami -t 2>/dev/null || true)
-
+            # Fallback: secret extraction
             if [ -z "${DEFAULT_TOKEN}" ]; then
-                DEFAULT_TOKEN=$(ocpopPrintTokenFromConfiguration || true)
-            fi
-
-            if [ -z "${DEFAULT_TOKEN}" ]; then
-                SECRET_NAME=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" | grep ^${OPERATOR_NAME} | grep service-account | awk '{print $1}' 2>/dev/null || true)
+                SECRET_NAME=$("${OC_CLIENT}" get sa "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" -o jsonpath='{.secrets[0].name}' 2>/dev/null || true)
                 if [ -n "${SECRET_NAME}" ]; then
-                    DEFAULT_TOKEN=$("${OC_CLIENT}" get secret -n "${OPERATOR_NAMESPACE}" "${SECRET_NAME}" -o json | jq -Mr '.data.token' | base64 -d 2>/dev/null || true)
+                    DEFAULT_TOKEN=$("${OC_CLIENT}" get secret "${SECRET_NAME}" -n "${OPERATOR_NAMESPACE}" -o jsonpath='{.data.token}' | base64 --decode || true)
                 fi
             fi
         fi
 
+        rlAssertNotEquals "Checking token not empty" "${DEFAULT_TOKEN}" ""
+
         echo "API_HOST_PORT=${API_HOST_PORT}"
         echo "DEFAULT_TOKEN=${DEFAULT_TOKEN}"
-        rlAssertNotEquals "Checking token not empty" "${DEFAULT_TOKEN}" ""
 
         # Replace placeholders in YAML
         sed -i s@API_HOST_PORT_HERE@"${API_HOST_PORT}"@g tang_operator.yaml
