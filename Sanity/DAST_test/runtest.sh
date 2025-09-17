@@ -155,11 +155,13 @@ rlJournalStart
 
         # 9 - clean helm installation
         helm uninstall rapidast
+
+    if [ -n "${KONFLUX}" ]; then
         rlRun "${OC_CLIENT} delete clusterrole daster"
         rlRun "${OC_CLIENT} delete clusterrolebinding daster-binding"
         rlRun "${OC_CLIENT} delete role token-creator -n ${OPERATOR_NAMESPACE}"
         rlRun "${OC_CLIENT} delete rolebinding token-creator-binding -n ${OPERATOR_NAMESPACE}"
-        
+    fi
         # 10 - return
         popd || exit
         popd || exit
