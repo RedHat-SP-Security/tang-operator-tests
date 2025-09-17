@@ -63,7 +63,7 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     pushd "${tmpdir}" || exit
     git clone https://github.com/RedHatProductSecurity/rapidast.git -b development || exit
 
-    # Pick template depending on KONFLUX
+    # Download tang_operator template depending on environment
     if [ -z "${KONFLUX}" ]; then
         rlRun "curl -o tang_operator.yaml https://raw.githubusercontent.com/latchset/tang-operator/main/tools/scan_tools/tang_operator_template.yaml"
     else
@@ -107,7 +107,7 @@ rlPhaseStartTest "Dynamic Application Security Testing"
         rlDie "Failed to acquire token or kubeconfig for DAST scan."
     fi
 
-    # Perform login if we have a token (CRC)
+    # Token login only if token is available (CRC)
     if [ "${DEFAULT_TOKEN}" != "TOKEN_NOT_USED_IN_KONFLUX" ]; then
         rlRun "${OC_CLIENT} login --token=${DEFAULT_TOKEN} --server=${API_HOST_PORT}" 0 "Login to OCP with token"
     fi
@@ -120,12 +120,12 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     else
         rlLog "Using kubeconfig-based authentication (Konflux)."
         sed -i s@AUTH_TOKEN_HERE@""@g tang_operator.yaml
-        sed -i s@KUBECONFIG_PATH_HERE@"${KUBECONFIG}"@g tang_operator.yaml || true
+        sed -i s@KUBECONFIG_PATH_HERE@"${KUBECONFIG}"@g tang_operator.yaml
     fi
     sed -i s@OPERATOR_NAMESPACE_HERE@"${OPERATOR_NAMESPACE}"@g tang_operator.yaml
 
-    # Copy kubeconfig into rapidast repo for container/pod access
-    cp "${KUBECONFIG}" rapidast/kubeconfig
+    # Ensure kubeconfig is available in Rapidast repo for helm/results.sh
+    rlRun "cp "${KUBECONFIG}" rapidast/kubeconfig" 0
 
     # adapt helm and run rapidast
     pushd rapidast || exit
@@ -149,7 +149,7 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     ocpopLogVerbose "REPORT DIR:${report_dir}"
 
     if [ -n "${report_dir}" ] && [ -f "${report_file}" ]; then
-        alerts=$(jq '.site[0].alerts | length' < "${report_file}" )
+        alerts=$(jq '.site[0].alerts | length' < "${report_file}")
         ocpopLogVerbose "Alerts:${alerts}"
         for ((alert=0; alert<alerts; alert++)); do
             risk_desc=$(jq ".site[0].alerts[${alert}].riskdesc" < "${report_file}" | awk '{print $1}' | tr -d '"' | tr -d " ")
@@ -167,13 +167,6 @@ rlPhaseStartTest "Dynamic Application Security Testing"
 
     helm uninstall rapidast || true
 
-    # Clean up RBAC only if token-based (CRC)
-    if [ "${DEFAULT_TOKEN}" != "TOKEN_NOT_USED_IN_KONFLUX" ]; then
-        rlRun "${OC_CLIENT} delete clusterrole daster" || true
-        rlRun "${OC_CLIENT} delete clusterrolebinding daster-binding" || true
-    fi
-
-    popd || exit
     popd || exit
 
 rlPhaseEnd
