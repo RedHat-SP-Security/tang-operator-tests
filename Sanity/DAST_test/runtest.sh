@@ -76,15 +76,12 @@ rlJournalStart
         # We assume this is only for the ephemeral pipeline.
         API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d ' ')
 
-        # --- FIX: Ensure the current user has permission to create tokens. ---
-        # The user running this script needs the 'serviceaccounts/token' verb.
-        # This fix creates a temporary role and binding for this specific task.
         rlLog "Granting token-creation permissions to the test runner."
-        rlRun "${OC_CLIENT} create role token-creator --verb=create --resource=serviceaccounts/token"
+        rlRun "${OC_CLIENT} create role token-creator --verb=create --resource=serviceaccounts/token -n ${OPERATOR_NAMESPACE}"
         CURRENT_USER=$("${OC_CLIENT}" whoami)
+        rlLog "Binding 'token-creator' role to user: ${CURRENT_USER}"
         rlRun "${OC_CLIENT} create rolebinding token-creator-binding --role=token-creator --user=${CURRENT_USER} -n ${OPERATOR_NAMESPACE}"
-        sleep 2 # Small wait for RBAC to propagate
-        # --- END FIX ---
+        rlRun "sleep 5" # Small wait for RBAC to propagate
 
         # The rest of the token logic should be sufficient now.
         rlLog "Checking for service account ${OPERATOR_NAME} in namespace ${OPERATOR_NAMESPACE}..."
@@ -158,13 +155,10 @@ rlJournalStart
 
         # 9 - clean helm installation
         helm uninstall rapidast
-        # Clean up RBAC created for the test
         rlRun "${OC_CLIENT} delete clusterrole daster"
         rlRun "${OC_CLIENT} delete clusterrolebinding daster-binding"
-        # --- FIX: Clean up the temporary RBAC for token creation. ---
         rlRun "${OC_CLIENT} delete role token-creator -n ${OPERATOR_NAMESPACE}"
         rlRun "${OC_CLIENT} delete rolebinding token-creator-binding -n ${OPERATOR_NAMESPACE}"
-        # --- END FIX ---
         
         # 10 - return
         popd || exit
