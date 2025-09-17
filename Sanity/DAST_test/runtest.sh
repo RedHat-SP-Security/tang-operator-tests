@@ -30,7 +30,7 @@
 . /usr/share/beakerlib/beakerlib.sh || exit 1
 
 
-OrlJournalStart
+rlJournalStart
     rlPhaseStartSetup
         if [ -z "${OPERATOR_NAME}" ];
         then
