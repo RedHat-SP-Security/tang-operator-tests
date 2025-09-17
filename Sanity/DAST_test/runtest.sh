@@ -106,10 +106,8 @@ rlPhaseStartTest "Dynamic Application Security Testing"
 
         rlRun "sleep 5"
 
-        # Extract token from service account
-        SECRET_NAME=$("${OC_CLIENT}" get sa ${OPERATOR_NAME} -n ${OPERATOR_NAMESPACE} -o jsonpath='{.secrets[0].name}')
-        DEFAULT_TOKEN=$("${OC_CLIENT}" get secret "${SECRET_NAME}" -n ${OPERATOR_NAMESPACE} -o jsonpath='{.data.token}' | base64 --decode)
-        rlLog "Service account token acquired for ephemeral pipeline."
+        DEFAULT_TOKEN=$("${OC_CLIENT}" serviceaccounts create-token "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" 2>/dev/null)
+        rlLog "Service account token acquired for ephemeral pipeline: ${DEFAULT_TOKEN}"
     fi
 
     echo "API_HOST_PORT=${API_HOST_PORT}"
