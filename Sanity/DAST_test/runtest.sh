@@ -55,7 +55,6 @@ rlPhaseStartSetup
     fi
 rlPhaseEnd
 
-############# DAST TESTS ##############
 rlPhaseStartTest "Dynamic Application Security Testing"
 
     ocpopLogVerbose "$(helm version)"
@@ -98,7 +97,7 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     # Ephemeral / Konflux fallback: kubeconfig
     if [ -z "${DEFAULT_TOKEN}" ] && [ -n "${KUBECONFIG_CONTENT}" ]; then
         rlLog "Falling back to KUBECONFIG_CONTENT for ephemeral pipeline."
-        export KUBECONFIG=/tmp/kubeconfig.yaml
+        export KUBECONFIG="${tmpdir}/kubeconfig"
         echo "${KUBECONFIG_CONTENT}" | base64 -d 2>/dev/null > "${KUBECONFIG}" || echo "${KUBECONFIG_CONTENT}" > "${KUBECONFIG}"
         rlRun "${OC_CLIENT} whoami" 0 "Verified cluster access via kubeconfig"
         DEFAULT_TOKEN="TOKEN_NOT_USED_IN_KONFLUX"
@@ -120,14 +119,17 @@ rlPhaseStartTest "Dynamic Application Security Testing"
         sed -i s@AUTH_TOKEN_HERE@"${DEFAULT_TOKEN}"@g tang_operator.yaml
     else
         rlLog "Using kubeconfig-based authentication (Konflux)."
-        sed -i s@AUTH_TOKEN_HERE@\"\"@g tang_operator.yaml
+        sed -i s@AUTH_TOKEN_HERE@""@g tang_operator.yaml
         sed -i s@KUBECONFIG_PATH_HERE@"${KUBECONFIG}"@g tang_operator.yaml || true
     fi
     sed -i s@OPERATOR_NAMESPACE_HERE@"${OPERATOR_NAMESPACE}"@g tang_operator.yaml
 
+    # Copy kubeconfig into rapidast repo for container/pod access
+    cp "${KUBECONFIG}" rapidast/kubeconfig
+
     # adapt helm and run rapidast
     pushd rapidast || exit
-    sed -i s@"kubectl --kubeconfig=./kubeconfig "@"${OC_CLIENT} "@g helm/results.sh
+    sed -i "s@kubectl --kubeconfig=./kubeconfig @${OC_CLIENT} --kubeconfig=./kubeconfig @" helm/results.sh
     sed -i s@"secContext: '{}'"@"secContext: '{\"privileged\": true}'"@ helm/chart/values.yaml
     sed -i s@'tag: "latest"'@'tag: "2.8.0"'@g helm/chart/values.yaml
 
