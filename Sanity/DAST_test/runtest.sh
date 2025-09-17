@@ -68,16 +68,17 @@ rlJournalStart
 
         API_HOST_PORT=$("${OC_CLIENT}" whoami --show-server | tr -d ' ')
 
-        rlLog "Granting token-creation permissions to the test runner."
-        rlRun "${OC_CLIENT} create role token-creator --verb=create --resource=serviceaccounts/token -n ${OPERATOR_NAMESPACE}"
-        rlRun "${OC_CLIENT} create rolebinding token-creator-binding-sa --role=token-creator --serviceaccount=${OPERATOR_NAMESPACE}:${OPERATOR_NAME} -n ${OPERATOR_NAMESPACE}"
-        sleep 2
-
+        # Ensure service account exists before binding
         rlLog "Checking for service account ${OPERATOR_NAME} in namespace ${OPERATOR_NAMESPACE}..."
         if ! "${OC_CLIENT}" get sa "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" &>/dev/null; then
             rlLog "Service account ${OPERATOR_NAME} not found. Creating it now."
             rlRun "${OC_CLIENT} create sa ${OPERATOR_NAME} -n ${OPERATOR_NAMESPACE}"
         fi
+
+        rlLog "Granting token-creation permissions to the service account."
+        rlRun "${OC_CLIENT} create role token-creator --verb=create --resource=serviceaccounts/token -n ${OPERATOR_NAMESPACE}"
+        rlRun "${OC_CLIENT} create rolebinding token-creator-binding-sa --role=token-creator --serviceaccount=${OPERATOR_NAMESPACE}:${OPERATOR_NAME} -n ${OPERATOR_NAMESPACE}"
+        sleep 2
 
         rlLog "Creating ClusterRole and ClusterRoleBinding for the DAST scan."
         rlRun "${OC_CLIENT} create clusterrole daster --verb=get,list --resource=pods,services,ingresses,deployments"
@@ -87,7 +88,6 @@ rlJournalStart
         # Token creation with fallback for older OC versions
         DEFAULT_TOKEN=$("${OC_CLIENT}" create token "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" 2>/dev/null || true)
         if [ -z "${DEFAULT_TOKEN}" ]; then
-            # fallback: read token from secret
             SECRET_NAME=$("${OC_CLIENT}" get sa "${OPERATOR_NAME}" -n "${OPERATOR_NAMESPACE}" -o jsonpath='{.secrets[0].name}')
             DEFAULT_TOKEN=$("${OC_CLIENT}" get secret "${SECRET_NAME}" -n "${OPERATOR_NAMESPACE}" -o jsonpath='{.data.token}' | base64 --decode)
         fi
