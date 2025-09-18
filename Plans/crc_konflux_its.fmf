@@ -67,7 +67,12 @@ discover:
   ref: main
   test:
     - /Setup/creating_test_namespace
-    - /Sanity
+    - /Sanity/DAST_test
+    - /Sanity/functional_test
+    - /Sanity/key_management_test
+    - /Sanity/legacy_test
+    - /Sanity/malware_detection_test
+    - /Sanity/scalability_test
 
 adjust+:
   - when: distro == rhel-9 or distro == centos-stream-9 

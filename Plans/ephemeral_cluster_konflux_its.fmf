@@ -54,7 +54,7 @@ discover:
 - name: Install_and_setup_oc_operator_sdk
   how: fmf
   url: https://github.com/RedHat-SP-Security/common-cloud-orchestration
-  ref: pk_pipeline_konflux_tmt
+  ref: main
   test:
     - /Setup/install_setup_oc
     - /Setup/install_setup_operator-sdk
@@ -64,7 +64,11 @@ discover:
   ref: main
   test:
     - /Setup/creating_test_namespace
-    - /Sanity
+    - /Sanity/functional_test
+    - /Sanity/key_management_test
+    - /Sanity/legacy_test
+    - /Sanity/malware_detection_test
+    - /Sanity/scalability_test
 
 adjust+:
   - when: distro == rhel-9 or distro == centos-stream-9 
