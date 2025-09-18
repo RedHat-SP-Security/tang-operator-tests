@@ -16,7 +16,7 @@ discover:
   how: fmf
   test:
    - /Setup/creating_test_namespace
-   - /Sanity/DAST_test
+   - /Sanity/
    - /Setup/clean_cluster
 
 adjust:

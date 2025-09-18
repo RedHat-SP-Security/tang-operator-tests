@@ -2,7 +2,7 @@ summary: Run tang operator test in crc cluster for KONFLUX ITS
 
 environment:
   TEST_OC_CLIENT: "oc"
-  V: "2"
+  V: "1"
   KONFLUX: "1"
   OPERATOR_NAME: "nbde-tang-server"
   #pre released version
@@ -61,7 +61,7 @@ discover:
 - name: Run_tang_operator_tests
   how: fmf
   url: https://github.com/RedHat-SP-Security/tang-operator-tests
-  ref: ap_pipelines_fixes
+  ref: main
   test:
     - /Setup/creating_test_namespace
     - /Sanity/functional_test
