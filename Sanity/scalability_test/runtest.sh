@@ -36,17 +36,39 @@ rlJournalStart
         TO_POD_SCALEIN_WAIT=180 #seconds
         TO_POD_TERMINATE=180 #seconds
 
+        # Check if ReadWriteMany is supported by attempting to create the PVC
         rlRun "${OC_CLIENT} apply -f ${TANG_FUNCTION_DIR}/reg_test/scale_test/scale_out/scale_out0/" 0 "Creating scale out test [0]"
-        rlRun "ocpopCheckPodAmount 1 ${TO_POD_START} ${TEST_NAMESPACE}" 0 "Checking 1 POD is started [Timeout=${TO_POD_START} secs.]"
-        rlRun "ocpopCheckServiceAmount 1 ${TO_SERVICE_START} ${TEST_NAMESPACE}" 0 "Checking 1 Service is started [Timeout=${TO_SERVICE_START} secs.]"
-        pod_name=$(ocpopGetPodNameWithPartialName "tang" "${TEST_NAMESPACE}" 5 1)
-        rlAssertNotEquals "Checking pod name not empty" "${pod_name}" ""
-        rlRun "ocpopCheckPodState Running ${TO_POD_START} ${TEST_NAMESPACE} ${pod_name}" 0 "Checking POD in Running state [Timeout=${TO_POD_START} secs.]"
-        rlRun "${OC_CLIENT} apply -f ${TANG_FUNCTION_DIR}/reg_test/scale_test/scale_out/scale_out1/" 0 "Creating scale out test [1]"
-        rlRun "ocpopCheckPodAmount 2 ${TO_POD_START} ${TEST_NAMESPACE}" 0 "Checking 1+1 PODs are started [Timeout=${TO_POD_START} secs.]"
-        pod2_name=$(ocpopGetPodNameWithPartialName "tang" "${TEST_NAMESPACE}" 5 1)
-        rlAssertNotEquals "Checking pod name not empty" "${pod2_name}" ""
-        rlRun "ocpopCheckPodState Running ${TO_POD_START} ${TEST_NAMESPACE} ${pod2_name}" 0 "Checking added POD in Running state [Timeout=${TO_POD_START} secs.]"
+
+        # Wait a bit and check if PVC is bound or pending
+        sleep 5
+        pvc_status=$(${OC_CLIENT} get pvc tangserver-pvc -n ${TEST_NAMESPACE} -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+
+        SKIP_TEST=0
+        if [ "$pvc_status" = "Pending" ]; then
+            # Check if the issue is due to ReadWriteMany not being supported
+            pvc_events=$(${OC_CLIENT} get events -n ${TEST_NAMESPACE} --field-selector involvedObject.name=tangserver-pvc -o json 2>/dev/null)
+            if echo "$pvc_events" | grep -q -i "storageclass.*does not support.*ReadWriteMany\|no.*volume.*plugin.*matched\|volume.*does not support.*access mode"; then
+                rlLogWarning "ReadWriteMany access mode is not supported by the storage class. Skipping scale-out test."
+                rlLog "RESULT: SKIP - ReadWriteMany not supported"
+                SKIP_TEST=1
+            fi
+        fi
+
+        if [ $SKIP_TEST -eq 0 ]; then
+            # Continue with normal test if PVC is bound or accessible
+            rlRun "ocpopCheckPodAmount 1 ${TO_POD_START} ${TEST_NAMESPACE}" 0 "Checking 1 POD is started [Timeout=${TO_POD_START} secs.]"
+            rlRun "ocpopCheckServiceAmount 1 ${TO_SERVICE_START} ${TEST_NAMESPACE}" 0 "Checking 1 Service is started [Timeout=${TO_SERVICE_START} secs.]"
+            pod_name=$(ocpopGetPodNameWithPartialName "tang" "${TEST_NAMESPACE}" 5 1)
+            rlAssertNotEquals "Checking pod name not empty" "${pod_name}" ""
+            rlRun "ocpopCheckPodState Running ${TO_POD_START} ${TEST_NAMESPACE} ${pod_name}" 0 "Checking POD in Running state [Timeout=${TO_POD_START} secs.]"
+            rlRun "${OC_CLIENT} apply -f ${TANG_FUNCTION_DIR}/reg_test/scale_test/scale_out/scale_out1/" 0 "Creating scale out test [1]"
+            rlRun "ocpopCheckPodAmount 2 ${TO_POD_START} ${TEST_NAMESPACE}" 0 "Checking 1+1 PODs are started [Timeout=${TO_POD_START} secs.]"
+            pod2_name=$(ocpopGetPodNameWithPartialName "tang" "${TEST_NAMESPACE}" 5 1)
+            rlAssertNotEquals "Checking pod name not empty" "${pod2_name}" ""
+            rlRun "ocpopCheckPodState Running ${TO_POD_START} ${TEST_NAMESPACE} ${pod2_name}" 0 "Checking added POD in Running state [Timeout=${TO_POD_START} secs.]"
+        fi
+
+        # Cleanup regardless of skip status
         rlRun "${OC_CLIENT} delete -f ${TANG_FUNCTION_DIR}/reg_test/scale_test/scale_out/scale_out0/" 0 "Deleting scale out test"
         rlRun "ocpopCheckPodAmount 0 ${TO_POD_STOP} ${TEST_NAMESPACE}" 0 "Checking no PODs continue running [Timeout=${TO_POD_STOP} secs.]"
         rlRun "ocpopCheckServiceAmount 0 ${TO_SERVICE_STOP} ${TEST_NAMESPACE}" 0 "Checking no Services continue running [Timeout=${TO_SERVICE_STOP} secs.]"
