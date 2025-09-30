@@ -26,6 +26,42 @@
 #
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+# Helper function to check pod and service amounts
+checkPodsAndServices() {
+    local expected_pods=$1
+    local expected_services=$2
+    local pod_timeout=$3
+    local service_timeout=$4
+    local namespace=$5
+
+    rlRun "ocpopCheckPodAmount ${expected_pods} ${pod_timeout} ${namespace}" 0 "Checking ${expected_pods} POD(s) [Timeout=${pod_timeout} secs.]"
+    rlRun "ocpopCheckServiceAmount ${expected_services} ${service_timeout} ${namespace}" 0 "Checking ${expected_services} Service(s) [Timeout=${service_timeout} secs.]"
+}
+
+# Helper function to wait for PVC phase with retry loop
+waitForPvcPhase() {
+    local pvc_name=$1
+    local namespace=$2
+    local timeout=$3
+    local counter=0
+
+    while [ ${counter} -lt ${timeout} ]; do
+        pvc_status=$(${OC_CLIENT} get pvc ${pvc_name} -n ${namespace} -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+        ocpopLogVerbose "PVC ${pvc_name} status: ${pvc_status} [${counter}/${timeout}]"
+
+        if [ "$pvc_status" = "Bound" ] || [ "$pvc_status" = "Pending" ]; then
+            echo "$pvc_status"
+            return 0
+        fi
+
+        counter=$((counter+1))
+        sleep 1
+    done
+
+    echo "$pvc_status"
+    return 1
+}
+
 # Include Beaker environment
 . /usr/share/beakerlib/beakerlib.sh || exit 1
 rlJournalStart
@@ -35,15 +71,16 @@ rlJournalStart
         rlRun ". ../../TestHelpers/functions.sh" || rlDie "cannot import function script"
         TO_POD_SCALEIN_WAIT=180 #seconds
         TO_POD_TERMINATE=180 #seconds
+        TO_PVC_READY=30 #seconds
 
         # Check if ReadWriteMany is supported by attempting to create the PVC
         rlRun "${OC_CLIENT} apply -f ${TANG_FUNCTION_DIR}/reg_test/scale_test/scale_out/scale_out0/" 0 "Creating scale out test [0]"
 
-        # Wait a bit and check if PVC is bound or pending
-        sleep 5
-        pvc_status=$(${OC_CLIENT} get pvc tangserver-pvc -n ${TEST_NAMESPACE} -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+        # Wait for PVC to reach Bound or Pending state with retry loop
+        pvc_status=$(waitForPvcPhase "tangserver-pvc" "${TEST_NAMESPACE}" ${TO_PVC_READY})
 
         SKIP_TEST=0
+        SCALE_OUT1_CREATED=0
         if [ "$pvc_status" = "Pending" ]; then
             # Check if the issue is due to ReadWriteMany not being supported
             pvc_events=$(${OC_CLIENT} get events -n ${TEST_NAMESPACE} --field-selector involvedObject.name=tangserver-pvc -o json 2>/dev/null)
@@ -56,28 +93,29 @@ rlJournalStart
 
         if [ $SKIP_TEST -eq 0 ]; then
             # Continue with normal test if PVC is bound or accessible
-            rlRun "ocpopCheckPodAmount 1 ${TO_POD_START} ${TEST_NAMESPACE}" 0 "Checking 1 POD is started [Timeout=${TO_POD_START} secs.]"
-            rlRun "ocpopCheckServiceAmount 1 ${TO_SERVICE_START} ${TEST_NAMESPACE}" 0 "Checking 1 Service is started [Timeout=${TO_SERVICE_START} secs.]"
+            checkPodsAndServices 1 1 ${TO_POD_START} ${TO_SERVICE_START} ${TEST_NAMESPACE}
             pod_name=$(ocpopGetPodNameWithPartialName "tang" "${TEST_NAMESPACE}" 5 1)
             rlAssertNotEquals "Checking pod name not empty" "${pod_name}" ""
             rlRun "ocpopCheckPodState Running ${TO_POD_START} ${TEST_NAMESPACE} ${pod_name}" 0 "Checking POD in Running state [Timeout=${TO_POD_START} secs.]"
             rlRun "${OC_CLIENT} apply -f ${TANG_FUNCTION_DIR}/reg_test/scale_test/scale_out/scale_out1/" 0 "Creating scale out test [1]"
-            rlRun "ocpopCheckPodAmount 2 ${TO_POD_START} ${TEST_NAMESPACE}" 0 "Checking 1+1 PODs are started [Timeout=${TO_POD_START} secs.]"
+            SCALE_OUT1_CREATED=1
+            checkPodsAndServices 2 1 ${TO_POD_START} ${TO_SERVICE_START} ${TEST_NAMESPACE}
             pod2_name=$(ocpopGetPodNameWithPartialName "tang" "${TEST_NAMESPACE}" 5 1)
             rlAssertNotEquals "Checking pod name not empty" "${pod2_name}" ""
             rlRun "ocpopCheckPodState Running ${TO_POD_START} ${TEST_NAMESPACE} ${pod2_name}" 0 "Checking added POD in Running state [Timeout=${TO_POD_START} secs.]"
         fi
 
         # Cleanup regardless of skip status
-        rlRun "${OC_CLIENT} delete -f ${TANG_FUNCTION_DIR}/reg_test/scale_test/scale_out/scale_out0/" 0 "Deleting scale out test"
-        rlRun "ocpopCheckPodAmount 0 ${TO_POD_STOP} ${TEST_NAMESPACE}" 0 "Checking no PODs continue running [Timeout=${TO_POD_STOP} secs.]"
-        rlRun "ocpopCheckServiceAmount 0 ${TO_SERVICE_STOP} ${TEST_NAMESPACE}" 0 "Checking no Services continue running [Timeout=${TO_SERVICE_STOP} secs.]"
+        if [ $SCALE_OUT1_CREATED -eq 1 ]; then
+            rlRun "${OC_CLIENT} delete -f ${TANG_FUNCTION_DIR}/reg_test/scale_test/scale_out/scale_out1/" 0 "Deleting scale out test [1]"
+        fi
+        rlRun "${OC_CLIENT} delete -f ${TANG_FUNCTION_DIR}/reg_test/scale_test/scale_out/scale_out0/ --ignore-not-found=true" 0 "Deleting scale out test [0]"
+        checkPodsAndServices 0 0 ${TO_POD_STOP} ${TO_SERVICE_STOP} ${TEST_NAMESPACE}
     rlPhaseEnd
 
     rlPhaseStartTest "Scale-in scalability test"
         rlRun "${OC_CLIENT} apply -f ${TANG_FUNCTION_DIR}/reg_test/scale_test/scale_in/scale_in0/" 0 "Creating scale in test [0]"
-        rlRun "ocpopCheckPodAmount 2 ${TO_POD_START} ${TEST_NAMESPACE}" 0 "Checking 2 PODs are started [Timeout=${TO_POD_START} secs.]"
-        rlRun "ocpopCheckServiceAmount 1 ${TO_SERVICE_START} ${TEST_NAMESPACE}" 0 "Checking 1 Service is running [Timeout=${TO_SERVICE_START} secs.]"
+        checkPodsAndServices 2 1 ${TO_POD_START} ${TO_SERVICE_START} ${TEST_NAMESPACE}
         pod1_name=$(ocpopGetPodNameWithPartialName "tang" "${TEST_NAMESPACE}" 5 1)
         pod2_name=$(ocpopGetPodNameWithPartialName "tang" "${TEST_NAMESPACE}" 5 2)
         rlAssertNotEquals "Checking pod name not empty" "${pod1_name}" ""
@@ -90,14 +128,12 @@ rlJournalStart
         rlAssertNotEquals "Checking pod name not empty" "${pod1_name}" ""
         rlRun "ocpopCheckPodState Running ${TO_POD_START} ${TEST_NAMESPACE} ${pod1_name}" 0 "Checking POD:[$pod1_name}] still in Running state [Timeout=${TO_POD_START} secs.]"
         rlRun "${OC_CLIENT} delete -f ${TANG_FUNCTION_DIR}/reg_test/scale_test/scale_in/scale_in0/" 0 "Deleting scale in test"
-        rlRun "ocpopCheckPodAmount 0 ${TO_POD_STOP} ${TEST_NAMESPACE}" 0 "Checking no PODs continue running [Timeout=${TO_POD_STOP} secs.]"
-        rlRun "ocpopCheckServiceAmount 0 ${TO_SERVICE_START} ${TEST_NAMESPACE}" 0 "Checking no Services continue running [Timeout=${TO_SERVICE_START} secs.]"
+        checkPodsAndServices 0 0 ${TO_POD_STOP} ${TO_SERVICE_START} ${TEST_NAMESPACE}
     rlPhaseEnd
 
     rlPhaseStartTest "Scale-up scalability test"
         rlRun "${OC_CLIENT} apply -f ${TANG_FUNCTION_DIR}/reg_test/scale_test/scale_up/scale_up0/" 0 "Creating scale up test [0]"
-        rlRun "ocpopCheckPodAmount 1 ${TO_POD_START} ${TEST_NAMESPACE}" 0 "Checking 1 POD is started [Timeout=${TO_POD_START} secs.]"
-        rlRun "ocpopCheckServiceAmount 1 ${TO_SERVICE_START} ${TEST_NAMESPACE}" 0 "Checking 1 Service is running [Timeout=${TO_SERVICE_START} secs.]"
+        checkPodsAndServices 1 1 ${TO_POD_START} ${TO_SERVICE_START} ${TEST_NAMESPACE}
         pod1_name=$(ocpopGetPodNameWithPartialName "tang" "${TEST_NAMESPACE}" 5 1)
         rlAssertNotEquals "Checking pod name not empty" "${pod1_name}" ""
         rlRun "ocpopCheckPodState Running ${TO_POD_START} ${TEST_NAMESPACE} ${pod1_name}" 0 "Checking POD:[$pod1_name}] in Running state [Timeout=${TO_POD_START} secs.]"
@@ -116,14 +152,12 @@ rlJournalStart
         rlAssertGreater "Checking cpu request value increased" "${cpu2}" "${cpu1}"
         rlAssertGreater "Checking mem request value increased" "${mem2}" "${mem1}"
         rlRun "${OC_CLIENT} delete -f ${TANG_FUNCTION_DIR}/reg_test/scale_test/scale_up/scale_up0/" 0 "Deleting scale up test"
-        rlRun "ocpopCheckPodAmount 0 ${TO_POD_STOP} ${TEST_NAMESPACE}" 0 "Checking no PODs continue running [Timeout=${TO_POD_STOP} secs.]"
-        rlRun "ocpopCheckServiceAmount 0 ${TO_SERVICE_STOP} ${TEST_NAMESPACE}" 0 "Checking no Services continue running [Timeout=${TO_SERVICE_STOP} secs.]"
+        checkPodsAndServices 0 0 ${TO_POD_STOP} ${TO_SERVICE_STOP} ${TEST_NAMESPACE}
     rlPhaseEnd
 
     rlPhaseStartTest "Scale-down scalability test"
         rlRun "${OC_CLIENT} apply -f ${TANG_FUNCTION_DIR}/reg_test/scale_test/scale_down/scale_down0/" 0 "Creating scale down test [0]"
-        rlRun "ocpopCheckPodAmount 1 ${TO_POD_START} ${TEST_NAMESPACE}" 0 "Checking 1 POD is started [Timeout=${TO_POD_START} secs.]"
-        rlRun "ocpopCheckServiceAmount 1 ${TO_SERVICE_START} ${TEST_NAMESPACE}" 0 "Checking 1 Service is running [Timeout=${TO_SERVICE_START} secs.]"
+        checkPodsAndServices 1 1 ${TO_POD_START} ${TO_SERVICE_START} ${TEST_NAMESPACE}
         pod1_name=$(ocpopGetPodNameWithPartialName "tang" "${TEST_NAMESPACE}" 5 1)
         rlAssertNotEquals "Checking pod name not empty" "${pod1_name}" ""
         rlRun "ocpopCheckPodState Running ${TO_POD_START} ${TEST_NAMESPACE} ${pod1_name}" 0 "Checking POD:[$pod1_name}] in Running state [Timeout=${TO_POD_START} secs.]"
@@ -142,8 +176,7 @@ rlJournalStart
         rlAssertLesser "Checking cpu request value decreased" "${cpu2}" "${cpu1}"
         rlAssertLesser "Checking mem request value decreased" "${mem2}" "${mem1}"
         rlRun "${OC_CLIENT} delete -f ${TANG_FUNCTION_DIR}/reg_test/scale_test/scale_down/scale_down0/" 0 "Deleting scale down test"
-        rlRun "ocpopCheckPodAmount 0 ${TO_POD_STOP} ${TEST_NAMESPACE}" 0 "Checking no PODs continue running [Timeout=${TO_POD_STOP} secs.]"
-        rlRun "ocpopCheckServiceAmount 0 ${TO_SERVICE_STOP} ${TEST_NAMESPACE}" 0 "Checking no Services continue running [Timeout=${TO_SERVICE_STOP} secs.]"
+        checkPodsAndServices 0 0 ${TO_POD_STOP} ${TO_SERVICE_STOP} ${TEST_NAMESPACE}
     rlPhaseEnd
     ########### /SCALABILTY TESTS #########
 
