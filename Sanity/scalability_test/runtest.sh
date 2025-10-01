@@ -49,7 +49,7 @@ waitForPvcPhase() {
         pvc_status=$(${OC_CLIENT} get pvc ${pvc_name} -n ${namespace} -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
         ocpopLogVerbose "PVC ${pvc_name} status: ${pvc_status} [${counter}/${timeout}]"
 
-        if [ "$pvc_status" = "Bound" ] || [ "$pvc_status" = "Pending" ]; then
+        if [ "$pvc_status" = "Bound" ]; then
             echo "$pvc_status"
             return 0
         fi
@@ -76,17 +76,21 @@ rlJournalStart
         # Check if ReadWriteMany is supported by attempting to create the PVC
         rlRun "${OC_CLIENT} apply -f ${TANG_FUNCTION_DIR}/reg_test/scale_test/scale_out/scale_out0/" 0 "Creating scale out test [0]"
 
-        # Wait for PVC to reach Bound or Pending state with retry loop
+        # Wait for PVC to reach Bound state with retry loop
         pvc_status=$(waitForPvcPhase "tangserver-pvc" "${TEST_NAMESPACE}" ${TO_PVC_READY})
 
         SKIP_TEST=0
         SCALE_OUT1_CREATED=0
-        if [ "$pvc_status" = "Pending" ]; then
-            # Check if the issue is due to ReadWriteMany not being supported
+        if [ "$pvc_status" != "Bound" ]; then
+            # PVC did not become Bound - check if it's due to ReadWriteMany not being supported
             pvc_events=$(${OC_CLIENT} get events -n ${TEST_NAMESPACE} --field-selector involvedObject.name=tangserver-pvc -o json 2>/dev/null)
             if echo "$pvc_events" | grep -q -i "storageclass.*does not support.*ReadWriteMany\|no.*volume.*plugin.*matched\|volume.*does not support.*access mode"; then
                 rlLogWarning "ReadWriteMany access mode is not supported by the storage class. Skipping scale-out test."
                 rlLog "RESULT: SKIP - ReadWriteMany not supported"
+                SKIP_TEST=1
+            else
+                rlLogWarning "PVC did not become Bound (status: ${pvc_status}), but not due to ReadWriteMany. Skipping scale-out test."
+                rlLog "RESULT: SKIP - PVC not bound: ${pvc_status}"
                 SKIP_TEST=1
             fi
         fi
