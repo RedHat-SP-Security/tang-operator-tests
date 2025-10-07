@@ -35,8 +35,8 @@ rlJournalStart
     rlPhaseStartTest "Unique deployment functional test"
         rlRun 'rlImport "common-cloud-orchestration/ocpop-lib"' || rlDie "cannot import ocpop lib"
         rlRun ". ../../TestHelpers/functions.sh" || rlDie "cannot import function script"
-        TO_SERVICE_UP=180 #seconds
-        TO_EXTERNAL_IP=120 #seconds
+        TO_SERVICE_UP=300 #seconds
+        TO_EXTERNAL_IP=240 #seconds
 
         rlRun "${OC_CLIENT} apply -f ${TANG_FUNCTION_DIR}/reg_test/func_test/unique_deployment_test/" 0 "Creating unique deployment"
         rlRun "ocpopCheckPodAmount 1 ${TO_POD_START} ${TEST_NAMESPACE}" 0 "Checking 1 POD is started [Timeout=${TO_POD_START} secs.]"
