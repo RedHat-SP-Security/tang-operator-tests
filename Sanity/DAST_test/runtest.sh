@@ -54,8 +54,6 @@ rlPhaseStartSetup
     fi
 rlPhaseEnd
 
--------------
-
 ############# DAST TESTS ##############
 rlPhaseStartTest "Dynamic Application Security Testing"
     ocpopLogVerbose "$(helm version)"
@@ -132,6 +130,15 @@ rlPhaseStartTest "Dynamic Application Security Testing"
 
     pod_name=$(ocpopGetPodNameWithPartialName "rapidast" "default" "${TO_RAPIDAST}" 1)
     rlRun "ocpopCheckPodState Completed ${TO_DAST_POD_COMPLETED} default ${pod_name}" 0 "Checking POD ${pod_name} in Completed state [Timeout=${TO_DAST_POD_COMPLETED} secs.]"
+
+    # If pod didn't reach Completed state, show logs for debugging
+    # Use same method as ocpopCheckPodState (lib.sh:469) to get pod status
+    pod_state=$("${OC_CLIENT}" -n default get pod "${pod_name}" 2>/dev/null | grep -v "^NAME" | awk '{print $3}')
+    if [ "${pod_state}" != "Completed" ] || [ "${V}" == "1" ] || [ "${VERBOSE}" == "1" ]; then
+        rlLogWarning "Pod ${pod_name} is in state '${pod_state}' instead of expected 'Completed'. Showing pod logs for debugging:"
+        "${OC_CLIENT}" logs "${pod_name}" -n default --all-containers=true --ignore-errors=true || rlLogWarning "Failed to retrieve pod logs"
+        "${OC_CLIENT}" describe pod "${pod_name}" -n default || rlLogWarning "Failed to describe pod"
+    fi
 
     # extract results
     rlRun -c "bash ./helm/results.sh 2>/dev/null" 0 "Extracting DAST results"
