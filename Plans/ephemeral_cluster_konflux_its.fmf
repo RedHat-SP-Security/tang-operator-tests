@@ -24,10 +24,6 @@ prepare:
       - jq
       # Just for interacting with the images
       - podman
-      # For malware detection test
-      - clamav
-      - clamav-update
-      - tree
   - name: Pull the image taken from SNAPSHOT_64
     how: shell
     # Note, the ' character works here because the ${SNAPSHOT} is not a shell
@@ -75,11 +71,17 @@ discover:
     - /Sanity/scalability_test
 
 adjust+:
-  - when: distro == rhel-9 or distro == centos-stream-9 
+  - when: distro == rhel-9 or distro == centos-stream-9
     prepare+:
       - how: shell
         script:
           - dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm https://dl.fedoraproject.org/pub/epel/epel-next-release-latest-9.noarch.rpm
+      - name: Install EPEL packages for malware detection test
+        how: install
+        package:
+          - clamav
+          - clamav-update
+          - tree
   - when: OC is defined and OC == false
     enabled: false
     because: we want to run this plan only for KONFLUX CI, not PACKIT
