@@ -10,6 +10,11 @@ environment:
   #DOWNSTREAM_IMAGE_VERSION: "brew.registry.redhat.io/rh-osbs/iib:863070"
   TEST_EXTERNAL_CLUSTER_MODE: "1"
   DISABLE_IMAGE_MIRRORING: "true"
+  # ClamAV version compatible with RHEL 9.3's OpenSSL 3.0.x
+  # Update these when a newer compatible version becomes available
+  CLAMAV_VERSION: "1.0.9"
+  CLAMAV_RELEASE: "1.el9"
+  KOJI_BASE_URL: "https://kojipkgs.fedoraproject.org/packages/clamav"
 
 prepare:
   - how: shell
@@ -76,15 +81,18 @@ adjust+:
       - how: shell
         script:
           - dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm https://dl.fedoraproject.org/pub/epel/epel-next-release-latest-9.noarch.rpm
-          # Install compatible ClamAV version (1.0.9) that works with RHEL 9.3's OpenSSL 3.0.x
-          # Latest ClamAV (1.4.x) requires OpenSSL 3.4.0 which is not available in RHEL 9.3
-          # Using official Koji package archive (koji.fedoraproject.org buildID=2734209)
+          # Install tree package from EPEL (EPEL enabled for this)
           - dnf install -y tree
-          - dnf install -y https://kojipkgs.fedoraproject.org/packages/clamav/1.0.9/1.el9/noarch/clamav-filesystem-1.0.9-1.el9.noarch.rpm
-          - dnf install -y https://kojipkgs.fedoraproject.org/packages/clamav/1.0.9/1.el9/x86_64/clamav-lib-1.0.9-1.el9.x86_64.rpm
-          - dnf install -y https://kojipkgs.fedoraproject.org/packages/clamav/1.0.9/1.el9/x86_64/clamav-1.0.9-1.el9.x86_64.rpm
-          - dnf install -y https://kojipkgs.fedoraproject.org/packages/clamav/1.0.9/1.el9/x86_64/clamav-freshclam-1.0.9-1.el9.x86_64.rpm
-          - dnf install -y https://kojipkgs.fedoraproject.org/packages/clamav/1.0.9/1.el9/noarch/clamav-data-1.0.9-1.el9.noarch.rpm
+          # Install ClamAV ${CLAMAV_VERSION} from Koji archive (compatible with RHEL 9.3's OpenSSL 3.0.x)
+          # Note: Latest ClamAV 1.4.x requires OpenSSL 3.4.0 which is not available in RHEL 9.3
+          # --disablerepo=epel* is scoped ONLY to this command to avoid version conflicts
+          - |
+            dnf install -y --disablerepo=epel* \
+              ${KOJI_BASE_URL}/${CLAMAV_VERSION}/${CLAMAV_RELEASE}/noarch/clamav-filesystem-${CLAMAV_VERSION}-${CLAMAV_RELEASE}.noarch.rpm \
+              ${KOJI_BASE_URL}/${CLAMAV_VERSION}/${CLAMAV_RELEASE}/x86_64/clamav-lib-${CLAMAV_VERSION}-${CLAMAV_RELEASE}.x86_64.rpm \
+              ${KOJI_BASE_URL}/${CLAMAV_VERSION}/${CLAMAV_RELEASE}/x86_64/clamav-${CLAMAV_VERSION}-${CLAMAV_RELEASE}.x86_64.rpm \
+              ${KOJI_BASE_URL}/${CLAMAV_VERSION}/${CLAMAV_RELEASE}/x86_64/clamav-freshclam-${CLAMAV_VERSION}-${CLAMAV_RELEASE}.x86_64.rpm \
+              ${KOJI_BASE_URL}/${CLAMAV_VERSION}/${CLAMAV_RELEASE}/noarch/clamav-data-${CLAMAV_VERSION}-${CLAMAV_RELEASE}.noarch.rpm
   - when: OC is defined and OC == false
     enabled: false
     because: we want to run this plan only for KONFLUX CI, not PACKIT
