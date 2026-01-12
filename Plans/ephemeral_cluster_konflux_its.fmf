@@ -76,12 +76,14 @@ adjust+:
       - how: shell
         script:
           - dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm https://dl.fedoraproject.org/pub/epel/epel-next-release-latest-9.noarch.rpm
-      - name: Install EPEL packages for malware detection test
-        how: install
-        package:
-          - clamav
-          - clamav-update
-          - tree
+          # Install compatible ClamAV version (1.0.9) that works with RHEL 9.3's OpenSSL 3.0.x
+          # Latest ClamAV (1.4.x) requires OpenSSL 3.4.0 which is not available in RHEL 9.3
+          - dnf install -y tree
+          - dnf install -y https://dl.fedoraproject.org/pub/epel/9/Everything/x86_64/Packages/c/clamav-filesystem-1.0.9-1.el9.noarch.rpm
+          - dnf install -y https://dl.fedoraproject.org/pub/epel/9/Everything/x86_64/Packages/c/clamav-lib-1.0.9-1.el9.x86_64.rpm
+          - dnf install -y https://dl.fedoraproject.org/pub/epel/9/Everything/x86_64/Packages/c/clamav-1.0.9-1.el9.x86_64.rpm
+          - dnf install -y https://dl.fedoraproject.org/pub/epel/9/Everything/x86_64/Packages/c/clamav-freshclam-1.0.9-1.el9.x86_64.rpm
+          - dnf install -y https://dl.fedoraproject.org/pub/epel/9/Everything/x86_64/Packages/c/clamav-data-1.0.9-1.el9.noarch.rpm
   - when: OC is defined and OC == false
     enabled: false
     because: we want to run this plan only for KONFLUX CI, not PACKIT
