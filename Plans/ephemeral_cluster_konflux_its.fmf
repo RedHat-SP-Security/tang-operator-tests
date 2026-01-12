@@ -78,12 +78,13 @@ adjust+:
           - dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm https://dl.fedoraproject.org/pub/epel/epel-next-release-latest-9.noarch.rpm
           # Install compatible ClamAV version (1.0.9) that works with RHEL 9.3's OpenSSL 3.0.x
           # Latest ClamAV (1.4.x) requires OpenSSL 3.4.0 which is not available in RHEL 9.3
+          # Using official Koji package archive (koji.fedoraproject.org buildID=2734209)
           - dnf install -y tree
-          - dnf install -y https://dl.fedoraproject.org/pub/epel/9/Everything/x86_64/Packages/c/clamav-filesystem-1.0.9-1.el9.noarch.rpm
-          - dnf install -y https://dl.fedoraproject.org/pub/epel/9/Everything/x86_64/Packages/c/clamav-lib-1.0.9-1.el9.x86_64.rpm
-          - dnf install -y https://dl.fedoraproject.org/pub/epel/9/Everything/x86_64/Packages/c/clamav-1.0.9-1.el9.x86_64.rpm
-          - dnf install -y https://dl.fedoraproject.org/pub/epel/9/Everything/x86_64/Packages/c/clamav-freshclam-1.0.9-1.el9.x86_64.rpm
-          - dnf install -y https://dl.fedoraproject.org/pub/epel/9/Everything/x86_64/Packages/c/clamav-data-1.0.9-1.el9.noarch.rpm
+          - dnf install -y https://kojipkgs.fedoraproject.org/packages/clamav/1.0.9/1.el9/noarch/clamav-filesystem-1.0.9-1.el9.noarch.rpm
+          - dnf install -y https://kojipkgs.fedoraproject.org/packages/clamav/1.0.9/1.el9/x86_64/clamav-lib-1.0.9-1.el9.x86_64.rpm
+          - dnf install -y https://kojipkgs.fedoraproject.org/packages/clamav/1.0.9/1.el9/x86_64/clamav-1.0.9-1.el9.x86_64.rpm
+          - dnf install -y https://kojipkgs.fedoraproject.org/packages/clamav/1.0.9/1.el9/x86_64/clamav-freshclam-1.0.9-1.el9.x86_64.rpm
+          - dnf install -y https://kojipkgs.fedoraproject.org/packages/clamav/1.0.9/1.el9/noarch/clamav-data-1.0.9-1.el9.noarch.rpm
   - when: OC is defined and OC == false
     enabled: false
     because: we want to run this plan only for KONFLUX CI, not PACKIT
