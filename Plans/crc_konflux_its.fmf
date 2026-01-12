@@ -32,6 +32,10 @@ prepare:
       - jq
       # Just for interacting with the images
       - podman
+      # For malware detection test
+      - clamav
+      - clamav-update
+      - tree
   - name: Pull the image taken from SNAPSHOT_64
     how: shell
     # Note, the ' character works here because the ${SNAPSHOT} is not a shell
