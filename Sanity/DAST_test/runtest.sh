@@ -132,44 +132,56 @@ rlPhaseStartTest "Dynamic Application Security Testing"
         else
             rlLog "Configuring Google Cloud Storage export for RapiDAST results"
             GCS_SECRET_NAME="rapidast-gcs-key"
+            GCS_BUCKET_NAME="${GCS_BUCKET_NAME:-secaut-bucket}"
             # Build GCS directory: nbde-tang-server/<version>-<datetime>
             if [ -z "${GCS_DIRECTORY}" ]; then
                 GCS_CSV=$("${OC_CLIENT}" get csv -n "${OPERATOR_NAMESPACE}" --no-headers 2>/dev/null | grep -i "${OPERATOR_NAME}" | awk '{print $1}' | head -1)
                 GCS_VERSION=$("${OC_CLIENT}" get csv "${GCS_CSV}" -n "${OPERATOR_NAMESPACE}" -o jsonpath='{.spec.version}' 2>/dev/null)
-                [ -z "${GCS_VERSION}" ] && GCS_VERSION="unknown"
+                if [ -z "${GCS_VERSION}" ]; then
+                    rlLogWarning "Could not determine operator version from CSV, skipping GCS export"
+                fi
                 GCS_TIMESTAMP=$(date '+%Y%m%d%H%M%S')
                 GCS_DIRECTORY="nbde-tang-server/v${GCS_VERSION}-${GCS_TIMESTAMP}"
                 rlLog "GCS export directory: ${GCS_DIRECTORY}"
             fi
-            GCS_MOUNT_PATH="/opt/rapidast/config/gcs-key.json"
 
-            # Inject googleCloudStorage section into RapiDAST config
-            cat > "${tmpdir}/gcs_block.yaml" <<GCS_EOF
+            if [ -n "${GCS_VERSION}" ] || [ -n "${GCS_DIRECTORY}" ]; then
+                GCS_MOUNT_PATH="/opt/rapidast/config/gcs-key.json"
+
+                # Inject googleCloudStorage section into RapiDAST config
+                cat > "${tmpdir}/gcs_block.yaml" <<GCS_EOF
     googleCloudStorage:
         keyFile: "${GCS_MOUNT_PATH}"
-        bucketName: secaut-bucket
+        bucketName: ${GCS_BUCKET_NAME}
         directory: "${GCS_DIRECTORY}"
 GCS_EOF
-            sed -i "/configVersion:/r ${tmpdir}/gcs_block.yaml" "${tmpdir}/tang_operator.yaml"
+                sed -i "/configVersion:/r ${tmpdir}/gcs_block.yaml" "${tmpdir}/tang_operator.yaml"
 
-            # Create K8s secret from GCS key file
-            "${OC_CLIENT}" delete secret "${GCS_SECRET_NAME}" -n default 2>/dev/null || true
-            rlRun "${OC_CLIENT} create secret generic ${GCS_SECRET_NAME} --from-file=gcs-key.json=${GCS_KEY_FILE} -n default" 0 "Creating GCS key secret"
+                # Create K8s secret from GCS key file
+                "${OC_CLIENT}" delete secret "${GCS_SECRET_NAME}" -n default 2>/dev/null || true
+                rlRun "${OC_CLIENT} create secret generic ${GCS_SECRET_NAME} --from-file=gcs-key.json=${GCS_KEY_FILE} -n default" 0 "Creating GCS key secret"
 
-            # Patch Helm template to mount GCS key into the RapiDAST pod
-            cat > "${tmpdir}/gcs_volmount.yaml" <<'VOLMOUNT_EOF'
+                # Patch Helm template to mount GCS key into the RapiDAST pod
+                if ! grep -q "mountPath: /opt/rapidast/results" helm/chart/templates/_helpers.tpl; then
+                    rlLogWarning "Helm template marker 'mountPath: /opt/rapidast/results' not found, skipping GCS volume mount patch"
+                elif ! grep -q "claimName:" helm/chart/templates/_helpers.tpl; then
+                    rlLogWarning "Helm template marker 'claimName:' not found, skipping GCS volume patch"
+                else
+                    cat > "${tmpdir}/gcs_volmount.yaml" <<'VOLMOUNT_EOF'
       - name: gcs-key
         mountPath: /opt/rapidast/config
         readOnly: true
 VOLMOUNT_EOF
-            sed -i "\@mountPath: /opt/rapidast/results@r ${tmpdir}/gcs_volmount.yaml" helm/chart/templates/_helpers.tpl
+                    sed -i "\@mountPath: /opt/rapidast/results@r ${tmpdir}/gcs_volmount.yaml" helm/chart/templates/_helpers.tpl
 
-            cat > "${tmpdir}/gcs_vol.yaml" <<VOL_EOF
+                    cat > "${tmpdir}/gcs_vol.yaml" <<VOL_EOF
       - name: gcs-key
         secret:
           secretName: ${GCS_SECRET_NAME}
 VOL_EOF
-            sed -i "/claimName:/r ${tmpdir}/gcs_vol.yaml" helm/chart/templates/_helpers.tpl
+                    sed -i "/claimName:/r ${tmpdir}/gcs_vol.yaml" helm/chart/templates/_helpers.tpl
+                fi
+            fi
         fi
     fi
 
