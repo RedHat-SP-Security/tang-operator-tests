@@ -123,7 +123,7 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     pushd rapidast || exit
     sed -i "s@kubectl --kubeconfig=./kubeconfig @${OC_CLIENT} @" helm/results.sh
     sed -i s@"secContext: '{}'"@"secContext: '{\"privileged\": true}'"@ helm/chart/values.yaml
-    sed -i s@'tag: "latest"'@'tag: "2.8.0"'@g helm/chart/values.yaml
+    sed -i s@'tag: "latest"'@'tag: "2.11.0"'@g helm/chart/values.yaml
 
     helm uninstall rapidast || true
     rlRun -c "helm install rapidast ./helm/chart/ --set-file rapidastConfig=${tmpdir}/tang_operator.yaml 2>/dev/null" 0 "Installing rapidast helm chart"
