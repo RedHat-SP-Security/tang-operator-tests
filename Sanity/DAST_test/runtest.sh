@@ -125,6 +125,54 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     sed -i s@"secContext: '{}'"@"secContext: '{\"privileged\": true}'"@ helm/chart/values.yaml
     sed -i s@'tag: "latest"'@'tag: "2.11.0"'@g helm/chart/values.yaml
 
+    # GCS export configuration (optional, enabled by setting GCS_KEY_FILE)
+    if [ -n "${GCS_KEY_FILE}" ]; then
+        if [ ! -f "${GCS_KEY_FILE}" ]; then
+            rlLogWarning "GCS_KEY_FILE set but file not found: ${GCS_KEY_FILE}"
+        else
+            rlLog "Configuring Google Cloud Storage export for RapiDAST results"
+            GCS_SECRET_NAME="rapidast-gcs-key"
+            # Build GCS directory: nbde-tang-server/<version>-<datetime>
+            if [ -z "${GCS_DIRECTORY}" ]; then
+                GCS_CSV=$("${OC_CLIENT}" get csv -n "${OPERATOR_NAMESPACE}" --no-headers 2>/dev/null | grep -i "${OPERATOR_NAME}" | awk '{print $1}' | head -1)
+                GCS_VERSION=$("${OC_CLIENT}" get csv "${GCS_CSV}" -n "${OPERATOR_NAMESPACE}" -o jsonpath='{.spec.version}' 2>/dev/null)
+                [ -z "${GCS_VERSION}" ] && GCS_VERSION="unknown"
+                GCS_TIMESTAMP=$(date '+%Y%m%d%H%M%S')
+                GCS_DIRECTORY="nbde-tang-server/v${GCS_VERSION}-${GCS_TIMESTAMP}"
+                rlLog "GCS export directory: ${GCS_DIRECTORY}"
+            fi
+            GCS_MOUNT_PATH="/opt/rapidast/config/gcs-key.json"
+
+            # Inject googleCloudStorage section into RapiDAST config
+            cat > "${tmpdir}/gcs_block.yaml" <<GCS_EOF
+    googleCloudStorage:
+        keyFile: "${GCS_MOUNT_PATH}"
+        bucketName: secaut-bucket
+        directory: "${GCS_DIRECTORY}"
+GCS_EOF
+            sed -i "/configVersion:/r ${tmpdir}/gcs_block.yaml" "${tmpdir}/tang_operator.yaml"
+
+            # Create K8s secret from GCS key file
+            "${OC_CLIENT}" delete secret "${GCS_SECRET_NAME}" -n default 2>/dev/null || true
+            rlRun "${OC_CLIENT} create secret generic ${GCS_SECRET_NAME} --from-file=gcs-key.json=${GCS_KEY_FILE} -n default" 0 "Creating GCS key secret"
+
+            # Patch Helm template to mount GCS key into the RapiDAST pod
+            cat > "${tmpdir}/gcs_volmount.yaml" <<'VOLMOUNT_EOF'
+      - name: gcs-key
+        mountPath: /opt/rapidast/config
+        readOnly: true
+VOLMOUNT_EOF
+            sed -i "\@mountPath: /opt/rapidast/results@r ${tmpdir}/gcs_volmount.yaml" helm/chart/templates/_helpers.tpl
+
+            cat > "${tmpdir}/gcs_vol.yaml" <<VOL_EOF
+      - name: gcs-key
+        secret:
+          secretName: ${GCS_SECRET_NAME}
+VOL_EOF
+            sed -i "/claimName:/r ${tmpdir}/gcs_vol.yaml" helm/chart/templates/_helpers.tpl
+        fi
+    fi
+
     helm uninstall rapidast || true
     rlRun -c "helm install rapidast ./helm/chart/ --set-file rapidastConfig=${tmpdir}/tang_operator.yaml 2>/dev/null" 0 "Installing rapidast helm chart"
 
@@ -167,6 +215,11 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     fi
 
     helm uninstall rapidast || true
+
+    # Clean up GCS secret if created
+    if [ -n "${GCS_SECRET_NAME}" ]; then
+        "${OC_CLIENT}" delete secret "${GCS_SECRET_NAME}" -n default 2>/dev/null || true
+    fi
 
     popd || exit
     popd || exit
