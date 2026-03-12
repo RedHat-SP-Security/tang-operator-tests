@@ -210,7 +210,11 @@ VOL_EOF
     ocpopLogVerbose "REPORT FILE:${report_file}"
     ocpopLogVerbose "REPORT DIR:${report_dir}"
 
-    if [ -n "${report_dir}" ] && [ -f "${report_file}" ]; then
+    rlAssertNotEquals "DAST report file must not be empty" "${report_file}" ""
+    rlRun "test -f '${report_file}'" 0 "DAST report file must exist"
+    rlRun "test -d '${report_dir}' -a '${report_dir}' != '.'" 0 "DAST report directory must be valid"
+
+    if [ -n "${report_file}" ] && [ -f "${report_file}" ]; then
         alerts=$(jq '.site[0].alerts | length' < "${report_file}")
         ocpopLogVerbose "Alerts:${alerts}"
         for ((alert=0; alert<alerts; alert++)); do
