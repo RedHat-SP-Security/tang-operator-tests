@@ -122,6 +122,7 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     # adapt helm and run rapidast
     pushd rapidast || exit
     sed -i "s@kubectl --kubeconfig=./kubeconfig @${OC_CLIENT} @" helm/results.sh
+    sed -i '/--for=condition=Ready/{ /--timeout/!s@wait @wait --timeout=120s @; }' helm/results.sh
     sed -i s@"secContext: '{}'"@"secContext: '{\"privileged\": true}'"@ helm/chart/values.yaml
     sed -i s@'tag: "latest"'@'tag: "2.11.0"'@g helm/chart/values.yaml
 
@@ -209,7 +210,11 @@ VOL_EOF
     ocpopLogVerbose "REPORT FILE:${report_file}"
     ocpopLogVerbose "REPORT DIR:${report_dir}"
 
-    if [ -n "${report_dir}" ] && [ -f "${report_file}" ]; then
+    rlAssertNotEquals "DAST report file must not be empty" "${report_file}" ""
+    rlRun "test -f '${report_file}'" 0 "DAST report file must exist"
+    rlRun "test -d '${report_dir}' -a '${report_dir}' != '.'" 0 "DAST report directory must be valid"
+
+    if [ -n "${report_file}" ] && [ -f "${report_file}" ]; then
         alerts=$(jq '.site[0].alerts | length' < "${report_file}")
         ocpopLogVerbose "Alerts:${alerts}"
         for ((alert=0; alert<alerts; alert++)); do
