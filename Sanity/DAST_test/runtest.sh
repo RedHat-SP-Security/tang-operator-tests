@@ -122,6 +122,7 @@ rlPhaseStartTest "Dynamic Application Security Testing"
     # adapt helm and run rapidast
     pushd rapidast || exit
     sed -i "s@kubectl --kubeconfig=./kubeconfig @${OC_CLIENT} @" helm/results.sh
+    sed -i "s@wait --for=condition=Ready@wait --timeout=120s --for=condition=Ready@" helm/results.sh
     sed -i s@"secContext: '{}'"@"secContext: '{\"privileged\": true}'"@ helm/chart/values.yaml
     sed -i s@'tag: "latest"'@'tag: "2.11.0"'@g helm/chart/values.yaml
 
