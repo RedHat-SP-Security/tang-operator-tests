@@ -8,7 +8,7 @@ recommend:
   - tang
 require+:
   - clevis
-duration: 15m
+duration: 30m
 enabled: true
 tag:
   - NoRHEL6
