@@ -1,5 +1,9 @@
 summary: Scalability test for the tang operator
-description: ''
+description: |
+    Verify that the tang operator handles scalability scenarios correctly,
+    including scale-out (adding pod replicas), scale-in (reducing replicas),
+    scale-up (increasing CPU and memory resources), and scale-down (decreasing
+    CPU and memory resources).
 contact: Patrik Koncity <pkoncity@redhat.com>
 component:
   - tang

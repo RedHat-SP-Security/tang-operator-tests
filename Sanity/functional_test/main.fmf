@@ -1,5 +1,9 @@
 summary: Functionality test for the tang operator
-description: ''
+description: |
+    Verify that the tang operator deploys functional tang servers by testing
+    service availability, tang advertisement, clevis encryption and decryption
+    through the tang service, key rotation, multiple deployments with
+    advertisement comparison, and headless (ClusterIP None) service deployment.
 contact: Patrik Koncity <pkoncity@redhat.com>
 component:
   - tang

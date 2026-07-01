@@ -1,5 +1,9 @@
 summary: Key management test for the tang operator
-description: ''
+description: |
+    Verify that the tang operator key management works correctly by testing
+    API-driven key rotation, tracking active and hidden key counts, selective
+    and bulk deletion of hidden keys, and checking running and ready replica
+    status with multiple replicas.
 contact: Patrik Koncity <pkoncity@redhat.com>
 component:
   - tang
