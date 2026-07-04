@@ -1,5 +1,9 @@
 summary: Configuration test of tang operator
-description: ''
+description: |
+    Verify that the tang operator correctly handles minimal (single replica),
+    main (three replicas), and multiple deployment (five pods, two services)
+    configurations by checking that the expected number of pods and services
+    start and stop properly.
 contact: Patrik Koncity <pkoncity@redhat.com>
 component:
   - tang

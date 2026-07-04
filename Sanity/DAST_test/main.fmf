@@ -1,5 +1,8 @@
 summary: DAST test for the tang operator
-description: ''
+description: |
+    Verify that the tang operator API has no high-risk security vulnerabilities
+    by running Dynamic Application Security Testing (DAST) with RapiDAST and
+    ZAP scanner deployed via Helm and analyzing the resulting security report.
 contact: Patrik Koncity <pkoncity@redhat.com>
 component:
   - tang

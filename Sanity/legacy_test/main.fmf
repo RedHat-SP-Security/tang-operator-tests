@@ -1,5 +1,8 @@
 summary: Legacy test for the tang operator
-description: ''
+description: |
+    Verify that the tang operator correctly deploys a legacy tang server
+    configuration by checking that the pod reaches the Running state and
+    the associated service starts and stops properly.
 contact: Patrik Koncity <pkoncity@redhat.com>
 component:
   - tang
